@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+data/port.db
+.pytest_cache/
+.streamlit/
+streamlit.log
+streamlit.pid
+*.log
+.freebuff/
