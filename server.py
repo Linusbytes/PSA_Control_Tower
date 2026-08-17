@@ -1,7 +1,7 @@
 """Classic early-2000s control-tower frontend, served by the Python stdlib.
 
 The MCC control tower gives one shared view of the multi-country consolidation
-cargo story: the incoming container list (each clickable to open a ship-tracker
+cargo story: the inbound container list (each clickable to open a ship-tracker
 sidebar), the Tuas berth plan map (with the berth rectangle of the vessel each
 outbound container is bound for), the agent's PSCH receiving/putaway plan, and
 the outbound consolidation schedule. Same SQLite data layer as the Streamlit
@@ -154,7 +154,7 @@ def build_state() -> dict:
     for s in stowage:
         stow_by.setdefault((s["vessel_id"], s["bay"]), []).append(s)
 
-    incoming = []
+    inbound = []
     for c in containers:
         if c["cargo_flag"] != "deconsolidation_required":
             continue
@@ -214,8 +214,8 @@ def build_state() -> dict:
             for s in cells
         ]
         entry["bayplan_html"] = build_bay_plan(entry, clickable=True)
-        incoming.append(entry)
-    incoming.sort(key=lambda x: x["psch_receipt_eta"])
+        inbound.append(entry)
+    inbound.sort(key=lambda x: x["psch_receipt_eta"])
 
     outbound = []
     for o in outbounds:
@@ -296,7 +296,7 @@ def build_state() -> dict:
         },
         "vessels": [_serialise_vessel(v) for v in vessels],
         "berths": _berth_state(vessels),
-        "incoming": incoming,
+        "inbound": inbound,
         "outbound": outbound,
         "psch": psch,
         "trace": [
@@ -331,6 +331,17 @@ PAGE = r"""<!DOCTYPE html>
   .navbar td { padding:3px 10px; border-right:2px groove #808080; }
   .navlink a { font-weight:bold; }
   .navlink a.active { color:#000000; }
+
+  /* MCC nav group: one nav item holding the Inbound / Outbound sub-pages */
+  .navlink.nav-group { position:relative; }
+  .navlink.nav-group > a .arrow { font-size:9px; }
+  .nav-sub { display:none; position:absolute; top:100%; left:0; z-index:60;
+             background:#C0C0C0; border:2px solid #000080; min-width:150px; }
+  .navlink.nav-group:hover .nav-sub,
+  .navlink.nav-group:focus-within .nav-sub { display:block; }
+  .nav-sub a { display:block; padding:3px 16px; font-weight:bold; white-space:nowrap; }
+  .nav-sub a:hover { background:#000080; color:#FFFFFF; }
+  .nav-sub a.active { background:#000080; color:#FFFFFF; }
 
   table.grid { border-collapse:separate; border:2px outset #FFFFFF; background:#FFFFFF; width:100%; }
 
@@ -372,13 +383,13 @@ PAGE = r"""<!DOCTYPE html>
   .incoming-search-wrap { position:relative; }
   .searchbox { width:100%; box-sizing:border-box; font-family:"MS Sans Serif","Tahoma",sans-serif;
                font-size:11px; padding:2px 4px; border:2px inset #FFFFFF; background:#FFFFFF; }
-  #incomingDrop { position:absolute; top:100%; left:0; width:420px; max-width:80vw; z-index:80;
+  #incomingDrop, #outboundDrop { position:absolute; top:100%; left:0; width:420px; max-width:80vw; z-index:80;
                   display:none; max-height:420px; overflow:auto; background:#FFFFFF;
                   border:2px solid #000080; }
-  #incomingDrop .mp-item { margin-bottom:0; border-left:none; border-right:none; }
-  #incomingDrop .mp-item:first-child { border-top:1px solid #808080; }
-  #incomingDrop .no-match { padding:4px; font-size:10px; color:#404040; }
-  #incomingDrop .drop-foot { padding:2px 4px; background:#E8E8E8; color:#404040; font-size:9px; }
+  #incomingDrop .mp-item, #outboundDrop .mp-item { margin-bottom:0; border-left:none; border-right:none; }
+  #incomingDrop .mp-item:first-child, #outboundDrop .mp-item:first-child { border-top:1px solid #808080; }
+  #incomingDrop .no-match, #outboundDrop .no-match { padding:4px; font-size:10px; color:#404040; }
+  #incomingDrop .drop-foot, #outboundDrop .drop-foot { padding:2px 4px; background:#E8E8E8; color:#404040; font-size:9px; }
   .incoming-selinfo { margin-top:2px; font-size:10px; color:#404040; word-wrap:break-word; }
 
   /* Reflow: when a container detail is open the left column collapses so the
@@ -441,7 +452,39 @@ PAGE = r"""<!DOCTYPE html>
   .journey .stage-done { color:#808080; }
   .journey .stage-now { background:#FFFFCC; font-weight:bold; }
   .journey .stage-wait { color:#C0C0C0; }
-  .kpi-strip td { padding:2px 8px; border-right:1px solid #808080; white-space:nowrap; }
+  /* Compact overview-metric strip: metrics in one wrapping row that hugs its
+     content, instead of a full-width table of stacked rows eating the page. */
+  .kpi-strip { display:flex; flex-wrap:wrap; border:2px outset #FFFFFF; background:#FFFFFF;
+               margin:0 0 4px 0; }
+  .kpi-strip .kpi-cell { border-right:1px solid #808080; padding:2px 8px; white-space:nowrap; }
+  .kpi-strip .kpi-cell .k { color:#404040; }
+
+  /* ============ PSCH Plan — schematic floorplan ============ */
+  .psch-plan { width:100%; min-width:560px; }
+  .psch-plan .fp-site { background:#000080; color:#FFFFFF; font-size:10px; font-weight:bold;
+                        padding:4px 8px; border:2px outset #C0C0C0;
+                        display:flex; flex-wrap:wrap; gap:4px 12px; align-items:center; }
+  .psch-plan .fp-site .fp-road { color:#FFE87C; font-weight:normal; }
+  .psch-plan .fp-site .fp-gate { border:1px solid #FFFFFF; padding:0 5px; font-size:9px; font-weight:normal; }
+  .psch-plan .fp-yard { background:#D9D9C0; color:#3f3f00; font-size:9px; text-align:center;
+                        padding:4px; border:1px solid #808080; margin-top:2px; }
+  .psch-plan .fp-building { display:grid; grid-template-columns:1.1fr 2.2fr 0.9fr 1.2fr;
+                            gap:4px; margin-top:4px; }
+  .psch-plan .fp-zone { border:2px solid #404040; padding:6px; min-height:120px; }
+  .psch-plan .fp-zone-title { font-weight:bold; font-size:10px; text-align:center;
+                              border-bottom:2px solid #808080; margin-bottom:5px; padding-bottom:2px; }
+  .psch-plan .fp-sub { font-size:9px; font-weight:bold; color:#404040; margin-top:5px; }
+  .psch-plan .fp-lanes { font-size:11px; font-weight:bold; }
+  .psch-plan .fp-haz { font-size:8px; color:#B07000; font-weight:bold; }
+  .psch-plan .fp-in { background:#CFE3F2; }
+  .psch-plan .fp-store { background:#E4E4E4; }
+  .psch-plan .fp-cold { background:#D6E7F7; border-color:#1F4E79; }
+  .psch-plan .fp-cold .fp-zone-title { color:#1F4E79; }
+  .psch-plan .fp-out { background:#CFE3F2; }
+  .psch-plan .fp-support { background:#C0C0C0; border:2px inset #FFFFFF; font-size:9px; text-align:center;
+                           padding:3px; margin-top:4px; color:#404040; }
+  .psch-plan .fp-flow { border-top:2px solid #808080; background:#C0C0C0; font-size:9px; padding:2px 6px;
+                        text-align:center; color:#404040; margin-top:4px; }
 
   {{PSCH_CSS}}
 </style>
@@ -455,8 +498,13 @@ PAGE = r"""<!DOCTYPE html>
 </td></tr></table>
 
 <table class="navbar"><tr>
-  <td class="navlink"><a id="nav-mcc" href="#" onclick="showView('mcc');return false;">MCC Tracker (Inbound)</a></td>
-  <td class="navlink"><a id="nav-out" href="#" onclick="showView('out');return false;">Outbound Tracker</a></td>
+  <td class="navlink nav-group">
+    <a id="nav-mcc" href="#" onclick="showView('mcc');return false;">MCC <span class="arrow">▾</span></a>
+    <div class="nav-sub">
+      <a id="nav-inbound" href="#" onclick="showView('mcc');return false;">Inbound</a>
+      <a id="nav-outbound" href="#" onclick="showView('out');return false;">Outbound</a>
+    </div>
+  </td>
   <td class="navlink"><a id="nav-plan" href="#" onclick="showView('plan');return false;">PSCH Plan</a></td>
   <td class="navlink"><a id="nav-psch" href="#" onclick="showView('psch');return false;">PSCH Space</a></td>
   <td class="navlink"><a id="nav-tower" href="#" onclick="showView('tower');return false;">Control Tower</a></td>
@@ -473,11 +521,11 @@ PAGE = r"""<!DOCTYPE html>
 
 <!-- ================= MCC TRACKER ================= -->
 <div id="view-mcc">
-  <h3>MCC Tracker — Incoming Containers &amp; Vessel Tracking</h3>
-  <table class="grid"><tbody id="kpiStrip"></tbody></table>
+  <h3>MCC Tracker — Inbound Containers &amp; Vessel Tracking</h3>
+  <div class="kpi-strip" id="kpiStrip"></div>
   <table width="100%" cellspacing="4" class="cols"><tr>
     <td width="30%" valign="top" class="incoming-col">
-      <fieldset><legend>Incoming Containers (MCC cargo)</legend>
+      <fieldset><legend>Inbound Containers (MCC cargo)</legend>
         <div class="incoming-search-wrap">
           <input type="text" id="incomingSearch" class="searchbox"
                  placeholder="Search container / vessel / status…" autocomplete="off"
@@ -486,18 +534,18 @@ PAGE = r"""<!DOCTYPE html>
                  onblur="closeIncomingDropSoon()">
           <div id="incomingDrop"></div>
         </div>
+        <div id="berthInfo" style="margin-top:6px;min-height:36px">Click a berth rectangle on the map to inspect it — docked, inbound, or available.</div>
         <div id="incomingSelInfo" class="incoming-selinfo"></div>
       </fieldset>
     </td>
     <td width="42%" valign="top" class="map-col">
       <fieldset><legend>Viewer — Tuas Berth Plan (static map · not GPS tracking)</legend>
         <div id="facilityMap" style="position:relative;width:100%;max-width:560px;aspect-ratio:1;min-height:380px;border:1px solid #000000;overflow:hidden;background:#D9D9C0"></div>
-        <div id="berthInfo" style="margin-top:4px;min-height:36px">Click a berth rectangle on the map to inspect it — docked, inbound, or available.</div>
       </fieldset>
     </td>
     <td width="28%" valign="top" class="inspector-col">
       <fieldset><legend>Ship Tracker — Container Detail</legend>
-        <div id="inspector" style="min-height:420px">Select an incoming container on the left to open its ship-tracker detail.</div>
+        <div id="inspector" style="min-height:420px">Select an inbound container on the left to open its ship-tracker detail.</div>
       </fieldset>
     </td>
   </tr></table>
@@ -506,7 +554,7 @@ PAGE = r"""<!DOCTYPE html>
 <!-- ================= OUTBOUND TRACKER ================= -->
 <div id="view-out" style="display:none">
   <h3>Outbound MCC Tracker — Consolidation Containers &amp; Loading Vessels</h3>
-  <table class="grid"><tbody id="outKpiStrip"></tbody></table>
+  <div class="kpi-strip" id="outKpiStrip"></div>
   <table width="100%" cellspacing="4" class="cols"><tr>
     <td width="30%" valign="top" class="incoming-col">
       <fieldset><legend>Outbound Containers (consolidated MCC)</legend>
@@ -517,13 +565,13 @@ PAGE = r"""<!DOCTYPE html>
                  onkeydown="outKey(event)" onblur="closeOutDropSoon()">
           <div id="outboundDrop"></div>
         </div>
+        <div id="berthInfoOut" style="margin-top:6px;min-height:36px">Select an outbound container on the left to highlight the berth of the vessel it sails on.</div>
         <div id="outboundSelInfo" class="incoming-selinfo"></div>
       </fieldset>
     </td>
     <td width="42%" valign="top" class="map-col">
       <fieldset><legend>Viewer — Tuas Berth Plan (loading vessels)</legend>
         <div id="facilityMapOut" style="position:relative;width:100%;max-width:560px;aspect-ratio:1;min-height:380px;border:1px solid #000000;overflow:hidden;background:#D9D9C0"></div>
-        <div id="berthInfoOut" style="margin-top:4px;min-height:36px">Select an outbound container on the left to highlight the berth of the vessel it sails on.</div>
       </fieldset>
     </td>
     <td width="28%" valign="top" class="inspector-col">
@@ -537,7 +585,62 @@ PAGE = r"""<!DOCTYPE html>
 <!-- ================= PSCH PLAN ================= -->
 <div id="view-plan" style="display:none">
   <h3>PSCH Plan — Agent-prepared receiving, putaway &amp; consolidation</h3>
-  <table class="grid"><tbody id="planSummary"></tbody></table>
+  <div class="kpi-strip" id="planSummary"></div>
+  <table width="100%" cellspacing="4" class="cols"><tr>
+    <td width="30%" valign="top" class="incoming-col">
+      <fieldset><legend>Inbound Containers (MCC cargo)</legend>
+        <div id="planIncoming" style="max-height:360px;overflow:auto">Loading containers…</div>
+      </fieldset>
+      <div id="planSelInfo" class="incoming-selinfo">Select a container on the left to open its receiving &amp; putaway plan.</div>
+    </td>
+    <td width="42%" valign="top" class="map-col">
+      <fieldset><legend>PSCH Floorplan — receiving, storage &amp; dispatch (schematic)</legend>
+        <div class="psch-plan">
+          <div class="fp-site">
+            <span>PSA SUPPLY CHAIN HUB — TUAS</span>
+            <span class="fp-road">Tuas South Ave 5</span>
+            <span class="fp-gate">Gate 1</span>
+            <span class="fp-gate">Gate 2</span>
+          </div>
+          <div class="fp-yard">YARD — truck marshalling · container staging</div>
+          <div class="fp-building">
+            <div class="fp-zone fp-in">
+              <div class="fp-zone-title">INBOUND</div>
+              <div class="fp-sub">Receiving docks</div>
+              <div class="fp-lanes">10 lanes</div>
+              <div class="fp-sub">Receiving areas</div>
+              <div class="fp-lanes">R1–R4</div>
+              <div class="fp-sub">Staging</div>
+            </div>
+            <div class="fp-zone fp-store">
+              <div class="fp-zone-title">STORAGE — AMBIENT</div>
+              <div class="fp-sub">Selective racking</div>
+              <div class="fp-lanes">Aisles 1–21</div>
+              <div class="fp-haz">Aisle 21 — DG segregated</div>
+            </div>
+            <div class="fp-zone fp-cold">
+              <div class="fp-zone-title">COLD ROOM</div>
+              <div class="fp-sub">Chilled / frozen</div>
+              <div class="fp-lanes">Aisles 22–24</div>
+            </div>
+            <div class="fp-zone fp-out">
+              <div class="fp-zone-title">OUTBOUND</div>
+              <div class="fp-sub">Pick &amp; consolidation</div>
+              <div class="fp-sub">Releasing docks</div>
+              <div class="fp-lanes">26 lanes</div>
+            </div>
+          </div>
+          <div class="fp-support">SUPPORT — office · WMS · amenities · battery charging · maintenance</div>
+          <div class="fp-flow">FLOW — INBOUND ⟶ RECEIVING ⟶ PUTAWAY ⟶ STORAGE ⟶ PICK ⟶ RELEASING ⟶ OUTBOUND</div>
+        </div>
+      </fieldset>
+    </td>
+    <td width="28%" valign="top" class="inspector-col">
+      <fieldset><legend>Container Plan Detail</legend>
+        <div id="planInspector" style="min-height:360px">Select an inbound container on the left to open its plan detail.</div>
+      </fieldset>
+    </td>
+  </tr></table>
   <h4>Receiving &amp; robot putaway plan (per inbound container)</h4>
   <table class="grid">
     <thead><tr><th>Container</th><th>Status</th><th>Receipt ETA</th><th>Receiving area</th><th>Staging</th><th>Move to bin</th><th>Bin / Robot</th><th>Pallet pick</th><th>Release lane</th><th>Consol. group</th></tr></thead>
@@ -553,7 +656,7 @@ PAGE = r"""<!DOCTYPE html>
 <!-- ================= PSCH SPACE ================= -->
 <div id="view-psch" style="display:none">
   <h3>PSCH Space — racking, bins &amp; staging lanes (AMBIENT + COLD ROOM)</h3>
-  <table class="grid"><tbody id="pschKpis"></tbody></table>
+  <div class="kpi-strip" id="pschKpis"></div>
   <table width="100%" cellspacing="4" style="table-layout:fixed"><tr>
     <td width="58%" valign="top">
       <div class="psch-sec-head">INBOUND</div>
@@ -564,14 +667,12 @@ PAGE = r"""<!DOCTYPE html>
           </fieldset>
         </td>
         <td width="50%" valign="top">
-          <fieldset><legend>Incoming Containers</legend>
+          <fieldset><legend>Inbound Containers</legend>
             <div id="pschIncoming" style="max-height:250px;overflow:auto"></div>
           </fieldset>
         </td>
       </tr></table>
-      <div class="psch-sec-head out">OUTBOUND
-        <button type="button" class="btn" id="pschFacToggle" style="float:right" onclick="togglePschFacility()">▾ Collapse</button>
-      </div>
+      <div class="psch-sec-head out">OUTBOUND</div>
       <div id="pschOutboundSec">Loading outbound…</div>
     </td>
     <td width="42%" valign="top">
@@ -592,7 +693,7 @@ PAGE = r"""<!DOCTYPE html>
 <!-- ================= CONTROL TOWER ================= -->
 <div id="view-tower" style="display:none">
   <h3>Control Tower KPIs — MCC cargo pipeline</h3>
-  <table class="grid"><tbody id="kpiRows"></tbody></table>
+  <div class="kpi-strip" id="kpiRows"></div>
   <table width="100%"><tr>
     <td width="50%" valign="top"><fieldset><legend>Inbound journey stages</legend><table class="grid"><tbody id="journeyRows"></tbody></table></fieldset></td>
     <td width="50%" valign="top"><fieldset><legend>Outbound consolidation status</legend><table class="grid"><tbody id="outboundStatusRows"></tbody></table></fieldset></td>
@@ -619,6 +720,7 @@ PAGE = r"""<!DOCTYPE html>
 <script>
 var state = null;
 var view = 'mcc';
+var lastView = null;
 var selected = null; // {kind:'incoming'|'outbound'|'berth', id:...}
 var selectedBerth = null;
 var outQuery = '';
@@ -630,6 +732,27 @@ function $(id){ return document.getElementById(id); }
 function setDetail(open){
   var el = document.getElementById('view-' + view);
   if(el) el.classList.toggle('detail-open', !!open);
+}
+
+// Restore a tracker sub-page to its original arrangement (columns at their
+// normal widths, nothing selected, search cleared, dropdown closed). Called
+// when the user navigates back to the page so stale detail-open reflow and
+// selections do not survive a page switch.
+function resetMccView(){
+  selected = null;
+  selectedBerth = null;
+  closeIncomingDrop();
+  $('incomingSearch').value = '';
+  incomingQuery = '';
+  setDetail(false);
+}
+function resetOutView(){
+  outSelected = null;
+  outBerth = null;
+  closeOutDrop();
+  $('outboundSearch').value = '';
+  outQuery = '';
+  setDetail(false);
 }
 
 function isoDT(iso){ return iso ? iso.replace('T',' ').slice(0,16) : '—'; }
@@ -693,6 +816,14 @@ function countdownHtml(h){
   return '<span class="' + cls + '">' + txt + '</span>';
 }
 
+function kpiStripHtml(cells){
+  // One compact strip cell per metric (label + value), hugging its content
+  // instead of a full-width table of stacked rows.
+  return cells.map(function(c){
+    return '<span class="kpi-cell"><span class="k">' + c[0] + '</span> <span class="metric">' + c[1] + '</span></span>';
+  }).join('');
+}
+
 function renderKpiStrip(){
   var k = state.kpis;
   var cells = [
@@ -706,9 +837,7 @@ function renderKpiStrip(){
     ['Recv. areas', k.receiving_areas_opened],
     ['Bin util', k.bin_util + '%']
   ];
-  $('kpiStrip').innerHTML = cells.map(function(c){
-    return '<tr class="kpi-strip"><td>' + c[0] + '</td><td class="metric">' + c[1] + '</td></tr>';
-  }).join('');
+  $('kpiStrip').innerHTML = kpiStripHtml(cells);
 }
 
 var incomingQuery = '';
@@ -723,7 +852,7 @@ function incomingMatches(m, q){
 
 function renderIncoming(){
   var q = incomingQuery;
-  var items = state.incoming.filter(function(m){ return incomingMatches(m, q); });
+  var items = state.inbound.filter(function(m){ return incomingMatches(m, q); });
   var html = '';
   items.forEach(function(m){
     var cls = (selected && selected.kind === 'incoming' && selected.id === m.container_id) ? 'mp-item sel' : 'mp-item';
@@ -735,11 +864,11 @@ function renderIncoming(){
       '</button>';
   });
   if(!items.length) html = '<div class="no-match">No MCC containers match &lsquo;' + (q || '') + '&rsquo;.</div>';
-  html += '<div class="drop-foot">' + items.length + ' of ' + state.incoming.length + ' MCC containers in the pipeline</div>';
+  html += '<div class="drop-foot">' + items.length + ' of ' + state.inbound.length + ' MCC containers in the pipeline</div>';
   $('incomingDrop').innerHTML = html;
-  var info = 'Click here to search ' + state.incoming.length + ' incoming MCC containers';
+  var info = 'Click here to search ' + state.inbound.length + ' inbound MCC containers';
   if(selected && selected.kind === 'incoming'){
-    state.incoming.forEach(function(m){ if(m.container_id === selected.id) info = 'Selected: <b>' + m.container_id + '</b> ' + badge(m.status); });
+    state.inbound.forEach(function(m){ if(m.container_id === selected.id) info = 'Selected: <b>' + m.container_id + '</b> ' + badge(m.status); });
   }
   $('incomingSelInfo').innerHTML = info;
 }
@@ -751,7 +880,7 @@ function filterIncoming(){ incomingQuery = $('incomingSearch').value; $('incomin
 function incomingKey(ev){
   if(ev.key === 'Escape'){ closeIncomingDrop(); $('incomingSearch').blur(); }
   else if(ev.key === 'Enter'){
-    var first = state.incoming.filter(function(m){ return incomingMatches(m, incomingQuery); })[0];
+    var first = state.inbound.filter(function(m){ return incomingMatches(m, incomingQuery); })[0];
     if(first) pickIncoming(first.container_id);
   }
 }
@@ -766,7 +895,7 @@ function renderMap(){
   if(selected && selected.kind === 'outbound'){
     state.outbound.forEach(function(o){ if(o.container_id === selected.id && o.berth_id) highlightBerth = o.berth_id; });
   } else if(selected && selected.kind === 'incoming'){
-    state.incoming.forEach(function(m){ if(m.container_id === selected.id && m.berth_id) highlightBerth = m.berth_id; });
+    state.inbound.forEach(function(m){ if(m.container_id === selected.id && m.berth_id) highlightBerth = m.berth_id; });
   }
   state.berths.forEach(function(b){
     var v = b.vessel;
@@ -800,7 +929,7 @@ function renderBerthInfo(){
     state.berths.forEach(function(x){ if(x.id === selectedBerth) b = x; });
   } else if(selected && (selected.kind === 'incoming' || selected.kind === 'outbound')){
     var hl = null;
-    var arr = (selected.kind === 'incoming') ? state.incoming : state.outbound;
+    var arr = (selected.kind === 'incoming') ? state.inbound : state.outbound;
     arr.forEach(function(e){ if(e.container_id === selected.id && e.berth_id) hl = e.berth_id; });
     state.berths.forEach(function(x){ if(x.id === hl) b = x; });
   }
@@ -874,9 +1003,7 @@ function renderOutKpis(){
     ['Vessels alongside (loading)', state.vessels.filter(function(v){ return v.status === 'docked'; }).length],
     ['Vessels en route', state.vessels.filter(function(v){ return v.status === 'inbound'; }).length]
   ];
-  $('outKpiStrip').innerHTML = cells.map(function(c){
-    return '<tr class="kpi-strip"><td>' + c[0] + '</td><td class="metric">' + c[1] + '</td></tr>';
-  }).join('');
+  $('outKpiStrip').innerHTML = kpiStripHtml(cells);
 }
 
 function renderOutMap(){
@@ -1008,12 +1135,12 @@ function pad2(n){ return (n === null || n === undefined) ? '—' : (n < 10 ? '0'
 
 function renderInspector(){
   if(!selected || (selected.kind !== 'incoming' && selected.kind !== 'outbound')){
-    $('inspector').innerHTML = 'Select an incoming container on the left to open its ship-tracker detail.';
+    $('inspector').innerHTML = 'Select an inbound container on the left to open its ship-tracker detail.';
     return;
   }
   if(selected.kind === 'incoming'){
     var m = null;
-    state.incoming.forEach(function(x){ if(x.container_id === selected.id) m = x; });
+    state.inbound.forEach(function(x){ if(x.container_id === selected.id) m = x; });
     if(!m){ $('inspector').innerHTML = 'Container no longer in the pipeline.'; return; }
     $('inspector').innerHTML = inspectorIncoming(m);
   } else {
@@ -1119,15 +1246,15 @@ function inspectorOutbound(o, withReasoning){
 
 // ---- PSCH Plan view ----------------------------------------------------------
 function renderPlan(){
-  $('planSummary').innerHTML = [
+  $('planSummary').innerHTML = kpiStripHtml([
     ['Inbound arrival rate (next 6h)', state.kpis.arrival_rate + ' ctn/h'],
     ['Receiving areas opened', state.kpis.receiving_areas_opened + ' / 4'],
     ['Bin utilisation', state.kpis.bin_util + '%'],
     ['Avg sea→PSCH pipeline', state.kpis.avg_pipeline_h + ' h'],
     ['Outbound consolidation groups', state.kpis.outbound_total]
-  ].map(function(r){ return '<tr><td>' + r[0] + '</td><td class="metric">' + r[1] + '</td></tr>'; }).join('');
+  ]);
 
-  $('planRows').innerHTML = state.incoming.map(function(m, i){
+  $('planRows').innerHTML = state.inbound.map(function(m, i){
     return '<tr' + (i%2 ? ' class="alt"' : '') + '><td>' + m.container_id + '</td><td>' + badge(m.status) + '</td>' +
       '<td>' + isoDT(m.psch_receipt_eta) + '</td><td>' + m.receiving_area + '</td>' +
       '<td>' + isoTime(m.staging_start) + '–' + isoTime(m.staging_end) + 'Z</td>' +
@@ -1146,6 +1273,60 @@ function renderPlan(){
       '<td>' + o.loading_lane + ' @ ' + isoTime(o.lane_release_time) + 'Z</td>' +
       '<td>' + isoDT(o.eta_loading_area) + '</td><td>' + badge(o.status) + '</td></tr>';
   }).join('') || '<tr><td colspan="11">Run the planner first.</td></tr>';
+
+  renderPlanList();
+  renderPlanInspector();
+}
+
+function renderPlanList(){
+  var html = '<table width="100%">';
+  state.inbound.forEach(function(m){
+    var cls = (selected && selected.kind === 'incoming' && selected.id === m.container_id) ? 'mp-item sel' : 'mp-item';
+    var etaTxt = (m.status === 'Arrived') ? 'arrived' : countdownHtml(m.hours_until);
+    html += '<tr><td><button type="button" class="' + cls + '" onclick="pickPlanIncoming(\'' + m.container_id + '\')">' +
+      '<span class="cid">' + m.container_id + '</span> &nbsp;' + badge(m.status) + '<br>' +
+      'Receiving <b>' + m.receiving_area + '</b> · <b>' + m.bin_location + '</b> · ETA ' + isoDT(m.psch_receipt_eta) + ' (' + etaTxt + ')</button></td></tr>';
+  });
+  $('planIncoming').innerHTML = state.inbound.length
+    ? html + '</table>'
+    : '<div style="padding:4px">No MCC containers in the pipeline — run the planner first.</div>';
+}
+
+function pickPlanIncoming(cid){
+  selected = {kind:'incoming', id:cid};
+  renderPlanList();
+  renderPlanInspector();
+}
+
+function inspectorPlan(m){
+  return '<fieldset><legend>Receiving &amp; putaway plan</legend>' +
+    '<table class="grid"><tbody>' +
+    row('Status', badge(m.status)) +
+    row('Receipt ETA', '<b>' + isoDT(m.psch_receipt_eta) + '</b> (' + countdownHtml(m.hours_until) + ')') +
+    row('Receiving area', '<b>' + m.receiving_area + '</b>') +
+    row('Staging wait', isoTime(m.staging_start) + '–' + isoTime(m.staging_end) + 'Z') +
+    row('Move to bin', isoTime(m.move_start) + '–' + isoTime(m.move_end) + 'Z') +
+    row('Bin / Robot', '<b>' + m.bin_location + '</b> · ' + m.putaway_robot) +
+    row('Pallet pick', isoDT(m.pallet_pick_time)) +
+    row('Release lane', m.release_lane) +
+    row('Consolidation group', m.consolidation_group || 'next wave') +
+    '</tbody></table></fieldset>' +
+    '<fieldset><legend>Agent reasoning</legend><div style="padding:2px">' + (m.reasoning || '—') + '</div></fieldset>';
+}
+
+function renderPlanInspector(){
+  if(selected && selected.kind === 'incoming'){
+    var m = null;
+    state.inbound.forEach(function(x){ if(x.container_id === selected.id) m = x; });
+    if(m){
+      $('planInspector').innerHTML = inspectorPlan(m);
+      $('planSelInfo').innerHTML = 'Selected: <b>' + m.container_id + '</b> ' + badge(m.status) + ' · ' + m.receiving_area;
+      return;
+    }
+  }
+  $('planInspector').innerHTML = 'Select an inbound container on the left to open its receiving &amp; putaway plan — ' +
+    'receiving area, staging window, robot putaway bin, pallet pick and release lane.';
+  $('planSelInfo').innerHTML = 'Select a container on the left to open its receiving &amp; putaway plan.';
 }
 
 // ---- PSCH Space --------------------------------------------------------------
@@ -1157,12 +1338,6 @@ function renderPlan(){
 // ship-tracker detail.
 var pschSelRack = null; // aisle id, e.g. "1"
 var pschSelBin = null;  // bin id, e.g. "1-12-2A"
-var pschCollapsed = false; // compact facility arrangement (toggle button)
-
-function togglePschFacility(){
-  pschCollapsed = !pschCollapsed;
-  renderPsch();
-}
 
 function pschRoomOfAisle(a){
   for(var i=0;i<state.psch.rooms.length;i++){
@@ -1178,8 +1353,8 @@ function pschStatusShort(s){
            'staged':'STG','released':'REL','in_transit':'TRANSIT','loaded':'LOADED'}[s] || s || '');
 }
 function pschCidBin(cid){
-  for(var i=0;i<state.incoming.length;i++){
-    if(state.incoming[i].container_id === cid) return pschBinIdOf(state.incoming[i].bin_location);
+  for(var i=0;i<state.inbound.length;i++){
+    if(state.inbound[i].container_id === cid) return pschBinIdOf(state.inbound[i].bin_location);
   }
   return null;
 }
@@ -1277,9 +1452,7 @@ function renderPschKpis(){
     ['Receiving lanes in use', s.lanes_rcv_used + ' / ' + s.lanes_rcv_total],
     ['Releasing lanes in use', s.lanes_rel_used + ' / ' + s.releasing_lanes]
   ];
-  $('pschKpis').innerHTML = rows.map(function(r){
-    return '<tr class="kpi-strip"><td>' + r[0] + '</td><td class="metric">' + r[1] + '</td></tr>';
-  }).join('');
+  $('pschKpis').innerHTML = kpiStripHtml(rows);
 }
 
 function pschRackHtml(a, roomId, selAisle, hlAisle, hlOutAisles){
@@ -1332,12 +1505,12 @@ function pschRoomHtml(room, selAisle, hlAisle, hlCid, hlOutAisles, hlOutCids){
   var head = '<div class="psch-room-head' + cold + '">' + room.temp + ' · ' +
     room.used + '/' + room.cap + ' bins (' + room.pct + '% occupied)</div>';
   var racks = room.aisles.map(function(a){ return pschRackHtml(a, room.id, selAisle, hlAisle, hlOutAisles); }).join('');
-  var store = '<div class="psch-zone-title">STORAGE — RACKING</div>' +
+  var store = '<div class="psch-zone-title">STORAGE RACKS</div>' +
     '<div class="psch-rack-grid">' + racks + '</div>' +
     '<div class="psch-zone-note">racks named AISLE-LEVEL-BAY · click a rack to view its bins</div>';
   var recv = '<div class="psch-zone-title">RECEIVING</div>' + pschZoneInline(room, 'receiving', hlCid, hlOutCids);
-  var disp = '<div class="psch-zone-title">DISPATCH</div>' + pschZoneInline(room, 'dispatch', hlCid, hlOutCids);
-  var flow = '<div class="psch-flow">INBOUND ⟶ RECEIVING ⟶ PUTAWAY ⟶ STORAGE ⟶ PICK ⟶ DISPATCH ⟶ OUTBOUND</div>';
+  var disp = '<div class="psch-zone-title">RELEASING</div>' + pschZoneInline(room, 'dispatch', hlCid, hlOutCids);
+  var flow = '<div class="psch-flow">INBOUND ⟶ RECEIVING ⟶ PUTAWAY ⟶ STORAGE ⟶ PICK ⟶ RELEASING ⟶ OUTBOUND</div>';
   return '<div class="psch-room">' + head +
     '<table class="psch-room-body"><tr>' +
     '<td class="psch-zone psch-zone-recv">' + recv + '</td>' +
@@ -1362,24 +1535,9 @@ function pschLaneChips(lanes){
 }
 
 function renderPschOutbound(){
-  // OUTBOUND section: Ambient Room, Cold Room, then the physical Releasing
-  // Lanes — stacked in that order. The toggle collapses it to a summary.
-  var btn = $('pschFacToggle');
-  if(btn) btn.textContent = pschCollapsed ? '▸ Restore' : '▾ Collapse';
-  if(pschCollapsed){
-    var rooms = state.psch.rooms.map(function(r){
-      return '<div class="psch-collapsed-room"><b>' + r.label + '</b> · ' +
-        r.used + '/' + r.cap + ' bins (' + r.pct + '% occupied) · ' +
-        r.aisles.length + ' aisles</div>';
-    }).join('');
-    var s = state.psch.stats;
-    var lanes = 'Receiving lanes ' + s.lanes_rcv_used + '/' + s.lanes_rcv_total + ' in use · Releasing lanes ' +
-      s.lanes_rel_used + '/' + s.releasing_lanes + ' in use · ' + s.bins_used + '/' + s.bins_total + ' bins used (' + s.bin_util + '%)';
-    $('pschOutboundSec').innerHTML =
-      '<div class="psch-collapsed">' + rooms +
-      '<div class="psch-collapsed-lanes">' + lanes + '</div></div>';
-    return;
-  }
+  // OUTBOUND section: the physical Releasing Lanes first, then the Ambient
+  // and Cold Room rackings — stacked in that order, so the releasing lanes
+  // sit straight below the INBOUND section.
   var hlAisle = null, hlCid = null, hlOut = null, hlOutCids = null;
   if(selected && selected.kind === 'incoming'){
     var bid = pschCidBin(selected.id);
@@ -1398,19 +1556,19 @@ function renderPschOutbound(){
       pschRoomHtml(r, pschSelRack, hlAisle, hlCid, hlOut, hlOutCids) + '</div>';
   });
   $('pschOutboundSec').innerHTML =
-    '<fieldset><legend>Ambient Room</legend>' + (roomBox['ambient'] || '') + '</fieldset>' +
-    '<fieldset style="margin-top:4px"><legend>Cold Room</legend>' + (roomBox['cold_room'] || '') + '</fieldset>' +
-    '<fieldset style="margin-top:4px"><legend>Releasing Lanes</legend>' +
+    '<fieldset><legend>Releasing Lanes</legend>' +
     '<div id="pschRelLanes"></div>' +
     '<div class="psch-rel-legend">Each vertical block is one physical lane, parked side by side like dock doors along a warehouse wall (numbered 1…26, left to right). The agent allocates a consolidation container one lane, or a contiguous group of adjacent lanes (colour-coded), to stage the pallets waiting to be loaded into it. <b>Click a lane (or its container)</b>: the <b>red outline</b> boxes that container\'s allocated lanes, the facility <b>yellow-highlights the aisles</b> holding its staged pallets (source containers turn yellow in the receiving zones), and the ship tracker shows the cargo staged on those lanes. Click a free lane, or the selected lane group again, to clear. Grey = free lane.</div>' +
-    '</fieldset>';
+    '</fieldset>' +
+    '<fieldset style="margin-top:4px"><legend>Ambient Room</legend>' + (roomBox['ambient'] || '') + '</fieldset>' +
+    '<fieldset style="margin-top:4px"><legend>Cold Room</legend>' + (roomBox['cold_room'] || '') + '</fieldset>';
   renderPschRelLanes();
 }
 
 function renderPschReasoning(){
   var txt = null;
   if(selected && selected.kind === 'incoming'){
-    state.incoming.forEach(function(x){ if(x.container_id === selected.id) txt = x.reasoning; });
+    state.inbound.forEach(function(x){ if(x.container_id === selected.id) txt = x.reasoning; });
   } else if(selected && selected.kind === 'outbound'){
     state.outbound.forEach(function(x){ if(x.container_id === selected.id) txt = x.reasoning; });
   }
@@ -1527,7 +1685,7 @@ function renderPschRackDetail(){
 
 function renderPschIncoming(){
   var html = '<table width="100%">';
-  state.incoming.forEach(function(m){
+  state.inbound.forEach(function(m){
     var cls = (selected && selected.kind === 'incoming' && selected.id === m.container_id) ? 'mp-item sel' : 'mp-item';
     var etaTxt = (m.status === 'Arrived') ? 'arrived' : countdownHtml(m.hours_until);
     html += '<tr><td><button type="button" class="' + cls + '" onclick="pickPschIncoming(\'' + m.container_id + '\')">' +
@@ -1540,7 +1698,7 @@ function renderPschIncoming(){
 function renderPschInspector(){
   if(selected && selected.kind === 'incoming'){
     var m = null;
-    state.incoming.forEach(function(x){ if(x.container_id === selected.id) m = x; });
+    state.inbound.forEach(function(x){ if(x.container_id === selected.id) m = x; });
     if(m){ $('pschInspector').innerHTML = inspectorIncoming(m, false); return; }
   }
   if(selected && selected.kind === 'outbound'){
@@ -1555,7 +1713,7 @@ function renderPschInspector(){
 // ---- Control Tower -----------------------------------------------------------
 function renderTower(){
   var k = state.kpis;
-  $('kpiRows').innerHTML = [
+  $('kpiRows').innerHTML = kpiStripHtml([
     ['MCC containers in pipeline', k.mcc_containers],
     ['En route (sea + road)', k.en_route_total],
     ['Arrived at PSCH', k.arrived_at_psch],
@@ -1567,7 +1725,7 @@ function renderTower(){
     ['Outbound loaded', k.loaded_outbound + ' / ' + k.outbound_total],
     ['Yard utilisation', k.avg_yard_util + '%'],
     ['Drayage utilisation', k.drayage_util + '%']
-  ].map(function(r){ return '<tr><td>' + r[0] + '</td><td class="metric">' + r[1] + '</td></tr>'; }).join('');
+  ]);
 
   $('journeyRows').innerHTML = Object.keys(k.journey_counts).map(function(s, i){
     return '<tr' + (i%2 ? ' class="alt"' : '') + '><td>' + badge(s) + '</td><td class="metric">' + k.journey_counts[s] + '</td></tr>';
@@ -1593,16 +1751,30 @@ function renderTicker(){
 }
 
 function renderStatus(){
-  $('statusText').innerText = 'Ready — ' + state.incoming.length + ' inbound MCC containers, ' + state.outbound.length + ' consolidation groups, ' + state.trace.length + ' trace events.';
+  $('statusText').innerText = 'Ready — ' + state.inbound.length + ' inbound MCC containers, ' + state.outbound.length + ' consolidation groups, ' + state.trace.length + ' trace events.';
   $('lastUpdated').innerText = 'Updated ' + new Date().toLocaleTimeString();
 }
 
 function showView(v){
+  var nav = (v !== lastView);
   view = v;
-  ['mcc','out','psch','tower','trace'].forEach(function(name){
+  ['mcc','out','plan','psch','tower','trace'].forEach(function(name){
     $('view-' + name).style.display = (name === v) ? '' : 'none';
+  });
+  ['plan','psch','tower','trace'].forEach(function(name){
     $('nav-' + name).className = (name === v) ? 'active' : '';
   });
+  // MCC group: one nav item, two sub-pages (Inbound / Outbound).
+  $('nav-mcc').className = (v === 'mcc' || v === 'out') ? 'active' : '';
+  $('nav-inbound').className = (v === 'mcc') ? 'active' : '';
+  $('nav-outbound').className = (v === 'out') ? 'active' : '';
+  if(nav){
+    lastView = v;
+    // Returning to a tracker sub-page restores its original layout:
+    // columns back to normal widths, selection cleared, dropdowns closed.
+    if(v === 'mcc') resetMccView();
+    else if(v === 'out') resetOutView();
+  }
 }
 
 async function regenerate(){
