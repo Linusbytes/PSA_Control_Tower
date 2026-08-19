@@ -2,7 +2,7 @@
 
 Renders the PSCH space-utilisation visualisation from the state produced by
 ``data.facility.build_psch_space``: the two rooms (AMBIENT / COLD ROOM) each
-laid out Receiving -> Storage -> Dispatch with a one-way flow, every rack
+laid out Receiving -> Storage -> Releasing with a one-way flow, every rack
 (aisle) as a clickable cell, the rack detail as an AISLE-LEVEL-BAY bin grid,
 and the receiving / releasing staging lanes at the inbound and outbound areas.
 
@@ -79,12 +79,9 @@ FACILITY_CSS = """
 .psch-bin-grid td.hl { outline:3px solid #FF00FF; }
 .psch-bin-grid td.psch-b-box { background:#C0C0C0; font-size:8px; font-weight:bold; width:22px; }
 .psch-grid-wrap { overflow-x:auto; }
-.psch-collapsed { padding:2px; font-size:9px; line-height:1.5; }
-.psch-collapsed-room { margin-bottom:4px; }
-.psch-collapsed-lanes { color:#404040; margin-top:4px; border-top:1px dashed #808080; padding-top:3px; }
 /* PSCH Space is organised into INBOUND (receiving lanes + incoming containers)
-   and OUTBOUND (ambient room, cold room, releasing lanes) sections; the right
-   column holds the ship tracker and the agent reasoning. */
+   and OUTBOUND (releasing lanes, then the ambient room, then the cold room)
+   sections; the right column holds the ship tracker and the agent reasoning. */
 .psch-sec-head { background:#000080; color:#FFFFFF; font-weight:bold; font-size:10px;
                  padding:3px 6px; margin:8px 0 3px 0; }
 .psch-sec-head.out { background:#1F4E79; margin-top:12px; }
@@ -118,10 +115,14 @@ FACILITY_CSS = """
 .psch-bin-grid .psch-bin-id { font-size:7px; color:#404040; }
 .psch-bin-grid .psch-bin-cid { font-size:8px; font-weight:bold; word-break:break-all; }
 .psch-bin-grid .psch-bin-meta { font-size:7px; color:#404040; }
-.psch-lane-chip { border:1px solid #404040; background:#FFFFFF; margin-bottom:3px; padding:2px 3px; font-size:8px; }
+.psch-lane-chip { border:1px solid #404040; background:#FFFFFF; margin-bottom:3px;
+                   padding:2px 3px; font-size:8px; min-width:78px; text-align:center; }
 .psch-lane-id { font-weight:bold; font-size:9px; }
 .psch-lane-count { float:right; color:#404040; }
-.psch-lane-cids { color:#404040; word-wrap:break-word; font-size:7px; }
+/* One container number per line, never wrapped, centre-aligned; the chip
+   scrolls sideways if a number is longer than the chip width. */
+.psch-lane-cids { color:#404040; white-space:nowrap; overflow-x:auto; font-size:8px;
+                  text-align:center; }
 .psch-lane-cids b { color:#000000; }
 .psch-inline { font-size:8px; color:#404040; word-wrap:break-word; }
 .psch-inline b { color:#000000; }
@@ -210,7 +211,7 @@ def _zone_rooms_html(
 def room_html(room: dict, selected_aisle: str | None = None, hl_aisle: str | None = None,
               hl_cid: str | None = None, hl_out_aisles: set[str] | None = None,
               hl_out_cids: set[str] | None = None) -> str:
-    """One room block: header, Receiving | Storage (rack grid) | Dispatch, flow arrow."""
+    """One room block: header, Receiving | Storage (rack grid) | Releasing, flow arrow."""
     cold = " cold" if room["id"] == "cold_room" else ""
     # The box header ("Ambient Room"/"Cold Room") already names the room, so the
     # inner bar carries only temperature + occupancy — no duplicate header.
@@ -224,7 +225,7 @@ def room_html(room: dict, selected_aisle: str | None = None, hl_aisle: str | Non
         for a in room["aisles"]
     )
     store_zone = (
-        '<div class="psch-zone-title">STORAGE — RACKING</div>'
+        '<div class="psch-zone-title">STORAGE RACKS</div>'
         f'<div class="psch-rack-grid">{racks}</div>'
         '<div class="psch-zone-note">racks named AISLE-LEVEL-BAY · click a rack to view its bins</div>'
     )
@@ -233,11 +234,11 @@ def room_html(room: dict, selected_aisle: str | None = None, hl_aisle: str | Non
         + _zone_rooms_html(room, "receiving", hl_cid, hl_out_cids)
     )
     disp_zone = (
-        '<div class="psch-zone-title">DISPATCH</div>'
+        '<div class="psch-zone-title">RELEASING</div>'
         + _zone_rooms_html(room, "dispatch", hl_cid, hl_out_cids)
     )
     flow = (
-        '<div class="psch-flow">INBOUND ⟶ RECEIVING ⟶ PUTAWAY ⟶ STORAGE ⟶ PICK ⟶ DISPATCH ⟶ OUTBOUND</div>'
+        '<div class="psch-flow">INBOUND ⟶ RECEIVING ⟶ PUTAWAY ⟶ STORAGE ⟶ PICK ⟶ RELEASING ⟶ OUTBOUND</div>'
     )
     return (
         f'<div class="psch-room">{head}'
@@ -387,31 +388,6 @@ def facility_html(psch: dict, selected_aisle: str | None = None,
         '<div class="psch-lanes-head">INBOUND<br>RECEIVING LANES</div>' + rcv + "</td>"
         f'<td class="psch-rooms-col">{rooms}</td>'
         "</tr></table></div>"
-    )
-
-
-def facility_collapsed_html(psch: dict) -> str:
-    """Compact arrangement used when the facility view is collapsed.
-
-    Keeps the two rooms + lane usage as one-line summaries so a narrow pane
-    stays readable; the full facility (rooms + racks + lanes) is restored by
-    switching back to ``facility_html``.
-    """
-    rooms = "".join(
-        f'<div class="psch-collapsed-room"><b>{_esc(r["label"])}</b> · '
-        f'{r["used"]}/{r["cap"]} bins ({r["pct"]}% occupied) · '
-        f'{len(r["aisles"])} aisles</div>'
-        for r in psch["rooms"]
-    )
-    s = psch["stats"]
-    lanes = (
-        f'Receiving lanes {s["lanes_rcv_used"]}/{s["lanes_rcv_total"]} in use · '
-        f'Releasing lanes {s["lanes_rel_used"]}/4 in use · '
-        f'{s["bins_used"]}/{s["bins_total"]} bins used ({s["bin_util"]}%)'
-    )
-    return (
-        f'<div class="psch-collapsed">{rooms}'
-        f'<div class="psch-collapsed-lanes">{lanes}</div></div>'
     )
 
 

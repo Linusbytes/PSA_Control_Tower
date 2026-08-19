@@ -10,7 +10,7 @@ def test_state_is_json_serialisable():
     state = build_state()
     assert isinstance(state, dict)
     assert "sim_now" in state
-    assert "incoming" in state
+    assert "inbound" in state
     assert "outbound" in state
     assert "berths" in state
     assert "trace" in state
@@ -22,8 +22,8 @@ def test_state_is_json_serialisable():
 def test_incoming_containers_have_ship_tracker_fields():
     seed()
     state = build_state()
-    assert len(state["incoming"]) >= 6
-    for entry in state["incoming"]:
+    assert len(state["inbound"]) >= 6
+    for entry in state["inbound"]:
         assert entry["container_id"]
         assert entry["status"] in (
             "En Route (Sea)", "Unloaded", "Depot", "En Route (Road)", "Arrived",
@@ -38,48 +38,58 @@ def test_incoming_containers_have_ship_tracker_fields():
 def test_incoming_containers_carry_bay_plan_data():
     seed()
     state = build_state()
-    for entry in state["incoming"]:
+    for entry in state["inbound"]:
         assert entry["stow_bay"] is not None
         assert entry["stow_row"] and entry["stow_tier"]
         assert entry["bay_label"]
-        assert len(entry["bay_cells"]) > 0
-        # The bay plan grid HTML is present and highlights the container.
-        html = entry["bayplan_html"]
-        assert "bp-cell" in html and "bp-sel" in html
-        assert entry["container_id"] in html
-        # The selected cell's coordinates exist among the bay cells.
-        coords = {(c["stack"], c["tier"]) for c in entry["bay_cells"]}
-        assert (entry["stow_row"], entry["stow_tier"]) in coords
-        # Every cell carries its industry cargo type (RF/DG/OOG/GP).
-        assert all(c["type"] in ("RF", "DG", "OOG", "GP") for c in entry["bay_cells"])
+        # The 8s polled state stays lean: the heavy bay-plan data is served
+        # on demand (/api/bayplan) and cached client-side.
+        assert "bay_cells" not in entry and "bayplan_html" not in entry
+    # The on-demand endpoint still renders a highlighted bay plan per container.
+    from server import _bayplan_for_container
+
+    entry = state["inbound"][0]
+    html = _bayplan_for_container(entry["container_id"])
+    assert "bp-cell" in html and "bp-sel" in html
+    assert entry["container_id"] in html
 
 
 def test_state_includes_psch_space_view():
     seed()
     state = build_state()
     psch = state["psch"]
-    # Two rooms, 24 numbered aisles, 10 receiving lanes, 26 releasing lanes.
+    # Two rooms, 24 numbered aisles, 10 receiving lanes, 40 releasing lanes.
     assert {r["id"] for r in psch["rooms"]} == {"ambient", "cold_room"}
     assert sum(len(r["aisles"]) for r in psch["rooms"]) == 24
     assert psch["hazmat_aisle"] == "21"
     assert len(psch["lanes"]["receiving"]) == 10
-    assert len(psch["lanes"]["releasing"]) == 26
-    assert psch["stats"]["releasing_lanes"] == 26
+    assert len(psch["lanes"]["releasing"]) == 40
+    assert psch["stats"]["releasing_lanes"] == 40
     assert psch["stats"]["lanes_rcv_total"] == 10
     # 24 aisles x 12 levels x 3 bays x boxes A/B/C.
     assert psch["stats"]["bins_total"] == 24 * 12 * 3 * 3 == 2592
-    # Every incoming MCC container has a planned rack bin in the facility.
-    planned_bins = {e["bin_location"] for e in state["incoming"]}
-    assert psch["stats"]["bins_used"] == len(planned_bins)
-    for e in state["incoming"]:
-        bid = e["bin_location"].removeprefix("Bin ")
-        assert bid in psch["bins"]
+    # Bin flows (mcc / lcl) have a planned rack bin in the facility; whole-
+    # container flows (fcl / topup / transload) are staged whole and never
+    # occupy a rack bin.
+    planned_bins = {
+        e["bin_location"] for e in state["inbound"]
+        if e["bin_location"].startswith("Bin ")
+    }
+    # Dwell-stock floor fills the facility to a realistic band on top of the
+    # wave's own bins (and never double-books a wave bin).
+    assert psch["stats"]["bins_used"] >= len(planned_bins)
+    assert psch["stats"]["stock_bins"] > 0
+    assert 25 <= psch["stats"]["bin_util"] <= 70
+    for e in state["inbound"]:
+        if e["bin_location"].startswith("Bin "):
+            bid = e["bin_location"].removeprefix("Bin ")
+            assert bid in psch["bins"]
 
 
 def test_all_journey_stages_present_in_scenario():
     seed()
     state = build_state()
-    stages = {e["status"] for e in state["incoming"]}
+    stages = {e["status"] for e in state["inbound"]}
     # The scenario is designed to show the whole journey at once.
     assert stages >= {"En Route (Sea)", "Arrived"}
     assert "Unloaded" in stages or "Depot" in stages or "En Route (Road)" in stages
@@ -89,7 +99,7 @@ def test_container_sizes_are_20_or_40_only():
     seed()
     state = build_state()
     allowed = {"20FT", "40FT", "40HC"}
-    for entry in state["incoming"]:
+    for entry in state["inbound"]:
         assert entry["size"] in allowed
     for o in state["outbound"]:
         assert o["size"] in allowed

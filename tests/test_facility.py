@@ -5,6 +5,8 @@ ambient / cold-room split, cold-room and hazmat routing by the planner, the
 dwell-based slotting rule (height optimisation), the staging lanes, and the
 shared HTML builders.
 """
+import re
+
 from data import store
 from data.facility import (
     aisle_of_bin,
@@ -68,7 +70,9 @@ def test_bin_names_follow_dc_aisle_level_bay_convention():
 def test_planner_routes_reefer_to_cold_room_and_hazmat_to_aisle_d(tmp_path):
     db = _planned(tmp_path)
     containers = {c["container_id"]: c for c in store.get_containers(db)}
-    plans = store.get_mcc_plans(db)
+    # Bin flows (mcc / lcl) deconsolidate into rack bins; whole-container
+    # flows (fcl / topup / transload) are staged whole and carry no bin.
+    plans = [p for p in store.get_mcc_plans(db) if p["bin_location"].startswith("Bin ")]
     assert plans
     for p in plans:
         special = containers[p["container_id"]]["special_handling"]
@@ -105,21 +109,46 @@ def test_psch_space_state_shape_and_lanes(tmp_path):
     assert all(a["used"] <= a["cap"] for r in psch["rooms"] for a in r["aisles"])
     assert all(a["levels"] == 12 and a["bays"] == 3 and a["boxes"] == 3 for r in psch["rooms"] for a in r["aisles"])
 
-    assert psch["stats"]["bins_used"] == len(plans)
+    bin_plans = [p for p in plans if p["bin_location"].startswith("Bin ")]
+    # The facility carries a deterministic prior-wave dwell-stock floor on top
+    # of the current wave's plan bins, so utilisation sits in a realistic band.
+    assert psch["stats"]["bins_used"] >= len(bin_plans)
+    assert psch["stats"]["stock_bins"] > 0
     assert psch["stats"]["bins_total"] == total_capacity()
-    for p in plans:
+    assert 25 <= psch["stats"]["bin_util"] <= 70  # busy warehouse, not 3%
+    for p in bin_plans:
         assert bin_id_of(p["bin_location"]) in psch["bins"]
+    # Dwell stock never double-books a wave bin and never overflows an aisle.
+    for r in psch["rooms"]:
+        for a in r["aisles"]:
+            assert a["used"] <= a["cap"]
+            assert a["used"] == len(a["bins"]) + a["stock"]
+            assert a["pct"] <= 70
+    # Whole-container flows stage in slots/bays, never rack bins.
+    for p in plans:
+        if not p["bin_location"].startswith("Bin "):
+            assert bin_id_of(p["bin_location"]) not in psch["bins"]
 
     # Staging lanes: receiving lanes mirror the receiving areas (RA-n -> lane n,
-    # numbered plainly 1..10) and every plan appears in exactly one receiving
-    # lane. The releasing lanes are the 26 physical lanes at the dispatch area,
-    # each staged by at most one consolidation container.
+    # numbered plainly 1..10). Membership is LIVE against the sim clock: a
+    # container occupies its lane from arrival at PSCH until its putaway move
+    # completes (cargo moved to its bin), so the lanes fill and empty as the
+    # wave progresses — and the UI flashes each lane when a container arrives
+    # or leaves. The releasing lanes are the 40 physical lanes at the dispatch
+    # area, a cycling staging buffer: a lane may serve successive groups whose
+    # stuffing windows do not overlap, never two at the same time.
     assert len(psch["lanes"]["receiving"]) == 10
-    assert len(psch["lanes"]["releasing"]) == 26
+    assert len(psch["lanes"]["releasing"]) == 40
     all_rcv = [c for lane in psch["lanes"]["receiving"] for c in lane["containers"]]
-    assert len(all_rcv) == len(plans)
+    assert len(all_rcv) <= len(plans)
+    assert len(all_rcv) > 0  # at the seed instant some containers have arrived
+    # Every listed container belongs to the matching receiving area.
+    for i, lane in enumerate(psch["lanes"]["receiving"], start=1):
+        for cid in lane["containers"]:
+            p = next(p for p in plans if p["container_id"] == cid)
+            assert str(p.get("receiving_area", "")).startswith(f"RA-{i}")
     assert any(lane["group"] for lane in psch["lanes"]["releasing"])
-    assert psch["stats"]["releasing_lanes"] == 26
+    assert psch["stats"]["releasing_lanes"] == 40
 
     # Bins of arrived containers are marked occupied; others reserved.
     assert any(b["arrived"] for b in psch["bins"].values())
@@ -135,7 +164,7 @@ def test_slotting_optimises_height_by_release_time(tmp_path):
     from agents.mcc_planner import _dwell_level
 
     db = _planned(tmp_path)
-    plans = store.get_mcc_plans(db)
+    plans = [p for p in store.get_mcc_plans(db) if p["bin_location"].startswith("Bin ")]
     assert plans
     for p in plans:
         dwell_h = (p["pallet_pick_time"] - p["psch_receipt_eta"]).total_seconds() / 3600
@@ -162,7 +191,9 @@ def test_kpis_include_room_occupancy(tmp_path):
     )
     assert set(k["room_occupancy"]) == {"ambient", "cold_room"}
     assert 0 <= k["bin_util"] <= 100
-    assert k["bins_used"] == len(plans)
+    bin_plans = [p for p in plans if p["bin_location"].startswith("Bin ")]
+    # Same dwell-stock floor as the facility view: KPI and Storage page agree.
+    assert k["bins_used"] >= len(bin_plans)
     assert k["bins_total"] == total_capacity()
     assert k["lanes_releasing_used"] >= 1
 
@@ -170,8 +201,10 @@ def test_kpis_include_room_occupancy(tmp_path):
 def test_releasing_lanes_allocated_contiguously(tmp_path):
     """The agent allocates one lane (or a contiguous span) per consolidation group.
 
-    Every staged group owns a range inside lanes 1..26, spans are contiguous
-    (a group never jumps lanes), and no lane is shared between two groups.
+    Every staged group owns a contiguous range inside lanes 1..40 (a group never
+    jumps lanes), and the dispatch area is a CYCLING STAGING BUFFER: two groups
+    may reuse the same lane only when their stuffing windows do not overlap,
+    exactly like a real dispatch area whose bays are freed once a box is sealed.
     """
     db = _planned(tmp_path)
     outbounds = store.get_outbound_containers(db)
@@ -182,25 +215,97 @@ def test_releasing_lanes_allocated_contiguously(tmp_path):
     groups = psch["releasing_groups"]
     assert groups
     assert len(groups) == len([o for o in outbounds if o.get("staging_lane_start")])
-    used = []
     for g in groups:
-        assert 1 <= g["lane_start"] <= g["lane_end"] <= 26
+        assert 1 <= g["lane_start"] <= g["lane_end"] <= 40
         assert len(g["lanes"]) == g["lane_end"] - g["lane_start"] + 1
         assert g["container_id"] and g["sources"]
-        used.extend(g["lanes"])
-    # Every staged lane in the visual carries exactly that group, and groups
-    # never share a lane (contiguous non-overlapping allocation).
-    assert len(used) == len(set(used))
     for lane in psch["lanes"]["releasing"]:
         if lane["group"]:
             group = next(g for g in groups if g["container_id"] == lane["group"])
             assert lane["lane"] in group["lanes"]
+    # A lane shared by two groups must never serve overlapping stuffing windows.
+    staged = [o for o in outbounds if o.get("staging_lane_start")]
+    for i, a in enumerate(staged):
+        for b in staged[i + 1 :]:
+            a_lanes = set(range(a["staging_lane_start"], a["staging_lane_end"] + 1))
+            b_lanes = set(range(b["staging_lane_start"], b["staging_lane_end"] + 1))
+            if not (a_lanes & b_lanes):
+                continue
+            lo = max(a["stuffing_start"], b["stuffing_start"])
+            hi = min(a["stuffing_end"], b["stuffing_end"])
+            assert lo >= hi, (a["container_id"], b["container_id"])
+
+
+def test_wave_bins_spread_across_all_aisles(tmp_path):
+    """Bin assignment interleaves across every aisle of the zone.
+
+    The old cursor walked each (zone, level) pool sequentially, so the first
+    aisles filled while the rest sat empty. The shuffled pool spreads the
+    wave's putaways across all aisles, which is what a busy rack looks like.
+    """
+    db = _planned(tmp_path, seed=42, n=300)
+    plans = [p for p in store.get_mcc_plans(db) if p["bin_location"].startswith("Bin ")]
+    by_aisle = {}
+    for p in plans:
+        a = aisle_of_bin(bin_id_of(p["bin_location"]))
+        by_aisle[a] = by_aisle.get(a, 0) + 1
+    # Wave bins land in a healthy majority of the facility's 24 aisles.
+    assert len(by_aisle) >= 18, f"only {len(by_aisle)} aisles used: {by_aisle}"
+
+
+def test_aisle_utilisation_band_with_dwell_stock(tmp_path):
+    """Every aisle sits in a realistic utilisation band (30-70%, some ~10%)."""
+    db = _planned(tmp_path)
+    psch = build_psch_space(
+        store.get_mcc_plans(db), store.get_shipments(db), store.get_outbound_containers(db)
+    )
+    for room in psch["rooms"]:
+        for a in room["aisles"]:
+            assert 8 <= a["pct"] <= 70, (room["id"], a["id"], a["pct"])
+    # The band is a real band: several aisles comfortably inside 30-70%, and
+    # a few quiet ones allowed near 10%.
+    busy = [a for r in psch["rooms"] for a in r["aisles"] if a["pct"] >= 30]
+    assert len(busy) >= 14
+
+
+def test_dwell_stock_is_deterministic_and_never_double_books(tmp_path):
+    from data.facility import dwell_stock
+
+    db = _planned(tmp_path)
+    plans = store.get_mcc_plans(db)
+    wave = {
+        bin_id_of(p["bin_location"])
+        for p in plans
+        if p["bin_location"].startswith("Bin ")
+    }
+    a = dwell_stock(wave)
+    b = dwell_stock(wave)
+    assert a == b  # identical on every poll / regeneration
+    assert not (set(a) & wave)  # never double-books a wave bin
+    assert all(v["stock"] and v["arrived"] and v["pallets"] >= 1 for v in a.values())
+
+
+def test_consolidation_chunks_per_destination(tmp_path):
+    """A vessel call takes several consolidation boxes, not one giant group."""
+    from config import MCC_GROUP_SIZE
+
+    db = _planned(tmp_path, seed=42, n=300)
+    outbounds = store.get_outbound_containers(db)
+    assert len(outbounds) >= 8
+    # Every consolidation box groups at most MCC_GROUP_SIZE source containers
+    # and at least one (chunking keeps the staging footprint realistic).
+    for o in outbounds:
+        assert 1 <= len(o["source_container_ids"]) <= MCC_GROUP_SIZE
+    # The same destination produces several boxes (per-vessel chunking).
+    from collections import Counter
+
+    per_dest = Counter(o["destination"] for o in outbounds)
+    assert any(c >= 2 for c in per_dest.values())
 
 
 def test_psch_view_html_builders(tmp_path):
     from analysis.psch_view import (
         bin_grid_html,
-        facility_collapsed_html,
         facility_html,
         lanes_html,
         rack_summary_html,
@@ -238,8 +343,10 @@ def test_psch_view_html_builders(tmp_path):
     grid = bin_grid_html(psch, "1")
     # Levels are plain numbers (no "L" prefix): header "Level", rows 12..1.
     assert "Bay 1" in grid and ">Level</th>" in grid and ">12</td>" in grid
-    assert "L12" not in grid and "1-01-1A" in grid
+    assert "L12" not in grid
+    # The rack's bins render with the AISLE-LEVEL-BAY naming in the cell
+    # titles (occupied bins show the container id instead, so match the
+    # id pattern rather than one specific bin).
+    assert re.search(r'title="1-\d{2}-\d[ABC]', grid)
     assert rack_summary_html(psch, "1").startswith("<div")
     assert "RECEIVING LANES" in lanes_html(psch)
-    collapsed = facility_collapsed_html(psch)
-    assert "psch-collapsed" in collapsed and "AMBIENT" in collapsed

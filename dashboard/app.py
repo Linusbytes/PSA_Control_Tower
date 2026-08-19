@@ -1,7 +1,7 @@
 """MCC control-tower dashboard (Streamlit).
 
 Same data layer and MCC planner agent as the classic UI (server.py). The tabs
-walk the multi-country consolidation story: MCC Tracker (incoming containers
+walk the multi-country consolidation story: MCC Tracker (inbound containers
 with ship-tracker detail + outbound consolidation), PSCH Plan (the agent's
 receiving / robot putaway / consolidation schedule), Control Tower KPIs, and
 the Execution Trace.
@@ -28,6 +28,7 @@ from config import (  # noqa: E402
     N_CONTAINERS,
     SEED,
     SIM_NOW,
+    sim_now,
 )
 from data import store  # noqa: E402
 from data.facility import build_psch_space  # noqa: E402
@@ -38,7 +39,6 @@ from analysis.kpis import compute_kpis  # noqa: E402
 from analysis.psch_view import (  # noqa: E402
     FACILITY_CSS,
     bin_grid_html,
-    facility_collapsed_html,
     lanes_html,
     rack_summary_html,
     releasing_lanes_html,
@@ -196,7 +196,7 @@ if not plans:
 vessels = store.get_vessels(DB_PATH)
 yard = store.get_yard_status(DB_PATH)
 drayage = store.get_drayage(DB_PATH)
-kpis = compute_kpis(containers, plans, outbounds, yard, drayage)
+kpis = compute_kpis(containers, plans, outbounds, yard, drayage, sim_now=sim_now())
 
 vessel_by_id = {v["voyage_id"]: v for v in vessels}
 plan_by_id = {p["container_id"]: p for p in plans}
@@ -303,7 +303,7 @@ outbound.sort(key=lambda x: x["ETA loading area"])
 
 # ============================== MCC TRACKER ====================================
 with tab_track:
-    st.markdown("### MCC Tracker — incoming containers & vessel tracking")
+    st.markdown("### MCC Tracker — inbound containers & vessel tracking")
     m = st.columns(8)
     m[0].metric("At sea", kpis["journey_counts"]["En Route (Sea)"])
     m[1].metric("Unloaded", kpis["journey_counts"]["Unloaded"])
@@ -314,7 +314,7 @@ with tab_track:
     m[6].metric("Avg pipeline", f"{kpis['avg_pipeline_h']} h")
     m[7].metric("Recv. areas", kpis["receiving_areas_opened"])
 
-    st.markdown("#### Incoming MCC containers — click one for ship-tracker detail")
+    st.markdown("#### Inbound MCC containers — click one for ship-tracker detail")
     if not incoming:
         st.info("No MCC containers in the pipeline. Run the planner first.")
     else:
@@ -523,7 +523,7 @@ with tab_space:
         "### PSCH Space — racking, bins & staging lanes (AMBIENT + COLD ROOM)"
     )
     shipments = store.get_shipments(DB_PATH)
-    psch = build_psch_space(plans, shipments, outbounds)
+    psch = build_psch_space(plans, shipments, outbounds, sim_now=sim_now())
     stats = psch["stats"]
     occ = kpis.get("room_occupancy", {})
     m = st.columns(7)
@@ -562,7 +562,7 @@ with tab_space:
 
     cid_opts = ["—"] + [r["Container"] for r in incoming]
     sel_cid_label = st.selectbox(
-        "Select an incoming container (highlights its rack/bin below)",
+        "Select an inbound container (highlights its rack/bin below)",
         cid_opts,
         key="psch_cid",
     )
@@ -585,7 +585,7 @@ with tab_space:
             st.markdown("**Inbound Receiving Lanes**")
             st.markdown(lanes_html(psch), unsafe_allow_html=True)
         with cb:
-            st.markdown("**Incoming Containers**")
+            st.markdown("**Inbound Containers**")
             if not incoming:
                 st.info("No MCC containers in the pipeline. Run the planner first.")
             else:
@@ -616,28 +616,17 @@ with tab_space:
                 )
 
         st.markdown("#### OUTBOUND")
-        collapsed = st.toggle(
-            "Collapse rooms to compact summary", value=False, key="psch_collapse"
-        )
-        if collapsed:
-            st.markdown(facility_collapsed_html(psch), unsafe_allow_html=True)
-        else:
-            st.markdown("**Ambient Room**")
-            st.markdown(rooms_html["ambient"], unsafe_allow_html=True)
-            st.markdown("**Cold Room**")
-            st.markdown(rooms_html["cold_room"], unsafe_allow_html=True)
-
         st.markdown("**Releasing Lanes**")
         st.caption(
             "26 narrow vertical blocks parked side by side (like dock doors along a "
             "warehouse wall), one physical lane each, numbered 1…26 left to right at "
-            "the PSCH dispatch area. Each MCC consolidation container is allocated one "
+            "the PSCH releasing area. Each MCC consolidation container is allocated one "
             "lane, or a contiguous group of adjacent lanes (colour-coded), to stage the "
             "pallets waiting to be loaded into that same container (one lane holds up "
             "to 8 pallets). The **red outline** marks the selected container's allocated "
             "lanes; pick a container above to see the cargo staged on its lanes. "
             "Grey = free lane. Picking a container also yellow-highlights the aisles "
-            "holding its staged pallets in the rooms above."
+            "holding its staged pallets in the rooms below."
         )
         st.markdown(releasing_lanes_html(psch, selected_cid=sel_ob), unsafe_allow_html=True)
         if sel_ob:
@@ -650,10 +639,15 @@ with tab_space:
                 f"({ob['bound_vessel_id']}). Staged cargoes: {', '.join(ob['source_container_ids'])}."
             )
 
+        st.markdown("**Ambient Room**")
+        st.markdown(rooms_html["ambient"], unsafe_allow_html=True)
+        st.markdown("**Cold Room**")
+        st.markdown(rooms_html["cold_room"], unsafe_allow_html=True)
+
     with col_right:
         st.markdown("**Ship Tracker — Container Detail**")
         if not sel_cid:
-            st.info("Select an incoming container above to open its ship-tracker detail.")
+            st.info("Select an inbound container above to open its ship-tracker detail.")
         else:
             r = next(x for x in incoming if x["Container"] == sel_cid)
             p = r["plan"]

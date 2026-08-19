@@ -32,6 +32,8 @@ class ServiceType(str, Enum):
     MCC_CONSOLIDATION = "MCC_consolidation"
     LCL_CONSOLIDATION = "LCL_consolidation"
     TRANSLOADING = "transloading"
+    FCL_RELEASE = "FCL_release"
+    TOP_UP = "top_up"
 
 
 class StorageZone(str, Enum):
@@ -92,6 +94,12 @@ class Container(BaseModel):
     customs_status: CustomsStatus
     consignee_id: str | None = None
     special_handling: list[str] = Field(default_factory=list)  # reefer/hazmat/oversized
+    # PSCH service flow: mcc (marine deconsolidation -> vessel re-consolidation),
+    # lcl (LCL deconsolidation -> local/regional land delivery), fcl (whole-
+    # container land release), topup (re-consolidation / topping up), transload
+    # (container-to-container transfer).
+    flow: str = "mcc"
+    destination: str | None = None  # land release target for lcl/fcl/topup flows
     vessel_cutoff: datetime | None = None  # for export-bound containers
     # MCC tracking: the exact cell the container occupies in the carrying
     # vessel's stowage plan, in industry Bay-Row-Tier notation
@@ -188,7 +196,7 @@ class MccPlan(BaseModel):
 
     The agent derives every stage time from the carrying vessel's ETA (sea
     arrival -> quay unload -> depot -> road dispatch -> PSCH doorstep), then
-    plans the PSCH receiving area, robot putaway bin, and the consolidation
+    plans the PSCH receiving area, AS/RS stacker putaway bin, and the consolidation
     steps (staging, move, pallet pick, lane release) for the cargo inside.
     """
 
@@ -213,14 +221,17 @@ class MccPlan(BaseModel):
     staging_end: datetime
     move_start: datetime             # start of the move to the bin
     move_end: datetime
-    bin_location: str                # robot putaway destination, e.g. "Bin 1-12-2A"
+    bin_location: str                # AS/RS stacker putaway destination, e.g. "Bin 1-12-2A"
     #                                  (DC convention: AISLE-LEVEL-BAY = Aisle 1,
     #                                  Level 12, Bay 2A; aisles 1-24, ambient 1-21
     #                                  (21 hazmat), cold room 22-24)
-    putaway_robot: str               # e.g. "Robot 04"
+    putaway_robot: str               # e.g. "Stacker 04" (AS/RS stacker unit)
     pallet_pick_time: datetime       # when the pallets are picked for consolidation
     release_lane: str                # lane released for this container number
     consolidation_group: str | None  # outbound container id this cargo feeds
+    flow: str = "mcc"                 # mcc | lcl | fcl | topup | transload
+    destination: str | None = None    # land release target (lcl/fcl/topup flows)
+    delay_hours: float = 0.0          # road delay: actual arrival slips past psch_receipt_eta
     reasoning: str = ""
 
 

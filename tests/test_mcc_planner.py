@@ -26,14 +26,22 @@ def test_journey_timeline_is_consistent(tmp_path):
     db = _seeded(tmp_path)
     mcc_planner.plan(db)
     for p in store.get_mcc_plans(db):
+        # Journey timeline is time-consistent for every flow.
         assert p["sea_arrival"] < p["unload_end"] <= p["depot_arrive"] < p["road_depart"] < p["psch_receipt_eta"]
         assert p["staging_start"] == p["psch_receipt_eta"]
         assert p["staging_start"] < p["staging_end"] <= p["move_start"] < p["move_end"]
         assert p["receiving_area"].startswith("RA-")
-        assert p["bin_location"].startswith("Bin ")
-        assert p["putaway_robot"].startswith("Robot ")
-        # Releasing lanes are plain numbers, possibly a contiguous span "5–7".
-        assert p["release_lane"][0].isdigit()
+    # Bin flows (mcc / lcl) deconsolidate into rack bins; whole-container
+    # flows (fcl / topup / transload) are staged whole, so only bin flows
+    # carry a Bin/stacker/lane-number plan.
+    for p in store.get_mcc_plans(db):
+        if p["flow"] in ("mcc", "lcl"):
+            assert p["bin_location"].startswith("Bin ")
+            assert p["putaway_robot"].startswith("Stacker ")
+            # Releasing lanes are plain numbers, possibly a span "5–7".
+            assert p["release_lane"][0].isdigit()
+        else:
+            assert not p["bin_location"].startswith("Bin ")
 
 
 def test_journey_status_derivation():

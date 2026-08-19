@@ -15,7 +15,7 @@ simulated world (fleet w/ tracking + containers w/ stow cells + pallet shipments
         │
         ▼
    Control tower dashboard (classic UI + Streamlit)
-        ├── MCC Tracker — searchable incoming container dropdown, ship-tracker
+        ├── MCC Tracker — searchable inbound container dropdown, ship-tracker
         │                  sidebar (collapses the list to fit the detail on
         │                  screen), berth map
         ├── PSCH Plan — receiving / robot putaway / consolidation schedule

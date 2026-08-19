@@ -42,7 +42,7 @@ from models.schemas import (
     YardStatus,
 )
 
-CONTAINER_OWNERS = ["MSCU", "CMAU", "MAEU", "OOLU", "TCLU", "EMCU", "HLXU", "NYKU"]
+CONTAINER_OWNERS = ["MSCU", "CMAU", "MAEU", "OOLU", "TCLU", "EMCU", "HLXU", "NYKU", "SEAU", "HLCU"]
 SIZES = ["20FT", "40FT", "40HC"]  # 20ft or 40ft only; ~98% of the fleet is 40ft
 SPECIAL_FLAGS = ["reefer", "hazmat", "oversized"]
 YARD_BLOCKS = ["A", "B", "C", "D", "E", "F"]
@@ -52,6 +52,28 @@ YARD_BLOCKS = ["A", "B", "C", "D", "E", "F"]
 DESTINATIONS = ["Singapore", "Colombo", "Piraeus", "Rotterdam", "Hamburg", "Antwerp"]
 BERTHS = [f"B{i}" for i in range(1, 16)]  # 15 berth markers drawn on the aerial map
 
+# --- PSCH service flows -------------------------------------------------------
+# Every inbound container that enters PSCH is tagged with the service flow it
+# serves, so the port<->hub story is one list of containers with different
+# downstream purposes:
+#   mcc      marine deconsolidation, re-consolidated onto vessels (existing)
+#   lcl      LCL deconsolidation, delivered by land (local SG or regional)
+#   fcl      full-container-load, released whole by land
+#   topup    container re-consolidation (topping up) then released
+#   transload container-to-container transfer
+FLOWS = ["mcc", "lcl", "fcl", "topup", "transload"]
+# Local Singapore delivery areas (Central / Regional distribution).
+LOCAL_DESTINATIONS = [
+    "Changi", "Jurong East", "Woodlands", "Pasir Panjang", "Tanjong Pagar",
+    "Paya Lebar", "Serangoon", "Tampines", "Bukit Timah", "Tuas Link",
+]
+# Land destinations beyond Singapore (by road via the Tuas / Woodlands
+# causeway links, per the brief's central & regional distribution).
+REGIONAL_DESTINATIONS = [
+    "Johor Bahru", "Kuala Lumpur", "Port Klang", "Melaka", "Penang", "Kuantan",
+]
+TRUCK_LETTERS = ["T01", "T02", "T03", "T04", "T05", "T06", "T07", "T08"]
+
 # --- Bay plan geometry (industry stowage notation) ------------------------------
 # Stacks (rows) run 1..16 across the vessel; they are displayed even-side-first
 # (16..02) then odd-side (01..15), mirroring how terminals draw bay plans.
@@ -60,7 +82,7 @@ STACKS_DISPLAY = list(range(16, 0, -2)) + list(range(1, 17, 2))
 # Tiers below deck (hold): 02..18; above deck: 82..92. The hatch sits between.
 TIERS_BELOW = list(range(2, 20, 2))
 TIERS_ABOVE = list(range(82, 94, 2))
-N_BINS_40FT = 30  # even (40ft) bays per vessel -> ~98% of containers are 40ft
+N_BINS_40FT = 42  # even (40ft) bays per vessel -> ~98% of containers are 40ft
 N_BINS_20FT = 1   # one odd (20ft) bay per vessel (20ft boxes below deck)
 
 # Sea->PSCH stage durations (minutes) mirror config.py; the planner uses the
@@ -140,12 +162,14 @@ def _size_for_bay(rng: random.Random, bay: int) -> str:
 
 
 def _vessel_fleet(sim_now: datetime) -> list[Vessel]:
-    """The marine-side picture: 4 docked + 2 inbound vessels.
+    """The marine-side picture: 6 docked + 2 inbound vessels, 24/7 flow.
 
-    ETAs/ETDs are deliberately spread so the scenario shows the whole MCC cargo
-    journey at once: some cargo already consolidated and loaded (Singapore
-    group), some mid-journey at sea or on the road (Hamburg / Antwerp), some
-    still far out (Piraeus).
+    ETAs/ETDs are deliberately spread across the whole day (including the
+    small hours) so the scenario shows the continuous port<->PSCH<->port
+    rhythm: some cargo already consolidated and loaded (Singapore group),
+    some mid-journey at sea or on the road (Hamburg / Antwerp), some still
+    far out (Piraeus). No shift structure — a vessel docks or sails at any
+    hour.
     """
     return [
         Vessel(
@@ -193,6 +217,30 @@ def _vessel_fleet(sim_now: datetime) -> list[Vessel]:
             etd=sim_now + timedelta(hours=40),
             moves_planned=1900,
             destination="Rotterdam",
+            distance_nm=0.0,
+            speed_knots=0.0,
+        ),
+        Vessel(
+            voyage_id="HLC-NA-24W",
+            vessel_name="HAPAG-LLOYD NAMIBIA",
+            status=VesselStatus.DOCKED,
+            berth_id="B7",
+            eta=sim_now - timedelta(hours=14),
+            etd=sim_now + timedelta(hours=34),
+            moves_planned=1600,
+            destination="Hamburg",
+            distance_nm=0.0,
+            speed_knots=0.0,
+        ),
+        Vessel(
+            voyage_id="SEA-TA-25W",
+            vessel_name="SEALAND TAHITI",
+            status=VesselStatus.DOCKED,
+            berth_id="B8",
+            eta=sim_now - timedelta(hours=3),
+            etd=sim_now + timedelta(hours=40),
+            moves_planned=1200,
+            destination="Antwerp",
             distance_nm=0.0,
             speed_knots=0.0,
         ),
@@ -330,8 +378,8 @@ def _build_bay_plans(
       is 40ft, so each vessel carries ~30 40ft bays and one 20ft bay
       (20ft boxes below deck; above-deck hatch covers are drawn as panels).
     """
-    even_bays = list(range(2, 70, 2))
-    odd_bays = list(range(1, 71, 2))
+    even_bays = list(range(2, 92, 2))  # 45 even (40ft) bays to sample from
+    odd_bays = list(range(1, 93, 2))    # 46 odd (20ft) bays to sample from
     stowage: list[StowCell] = []
     for vessel in vessels:
         bays = sorted(
@@ -423,6 +471,22 @@ def _build_bay_plans(
     return stowage
 
 
+def _flow_counts(rng: random.Random, n: int) -> dict[str, int]:
+    """Exact per-flow container counts summing to n (MCC/LCL/FCL/Top Up/Transload)."""
+    weights = {"mcc": 0.36, "lcl": 0.26, "fcl": 0.16, "topup": 0.14, "transload": 0.08}
+    counts = {f: round(n * w) for f, w in weights.items()}
+    diff = n - sum(counts.values())
+    keys = list(counts)
+    for i in range(abs(diff)):
+        counts[keys[i % len(keys)]] += 1 if diff > 0 else -1
+    return {f: max(0, c) for f, c in counts.items()}
+
+
+def _land_destination(rng: random.Random) -> str:
+    """A land release target: local Singapore delivery or regional (by road)."""
+    return rng.choice(LOCAL_DESTINATIONS + REGIONAL_DESTINATIONS)
+
+
 def generate(
     seed: int = SEED,
     n_containers: int = N_CONTAINERS,
@@ -430,10 +494,13 @@ def generate(
 ) -> Scenario:
     """Generate a deterministic scenario. Same seed -> same world.
 
-    Roughly 30% of containers are MCC deconsolidation cargo heading to PSCH,
-    taken from the vessels' bay plans; the rest are plain import/transshipment
-    boxes that never leave the yard. Every MCC container gets exactly one PSCH
-    booking and a set of pallet shipments.
+    ~85% of the population is PSCH-bound cargo across the five service flows
+    (MCC / LCL / FCL / Top Up / Transload), every container taken from a real
+    bay-plan cell on its carrying vessel (so stowage plans and berth
+    highlights work for the whole list); the rest are plain import /
+    transshipment boxes that dwell in the yard. Arrivals are spread across the
+    whole 24h cycle — no shift structure. Every PSCH container gets exactly
+    one booking and a set of pallet shipments.
     """
     rng = random.Random(seed)
     seen_ids: set[str] = set()
@@ -441,23 +508,32 @@ def generate(
     vessels = _vessel_fleet(sim_now)
     vessel_by_id = {v.voyage_id: v for v in vessels}
 
-    n_decon = max(2, round(n_containers * 0.30))
-    n_import = max(1, round(n_containers * 0.25))
-    n_transship = max(0, n_containers - n_decon - n_import)
+    n_psch = max(24, round(n_containers * 0.85))
+    flow_counts = _flow_counts(rng, n_psch)
 
-    # Distribute the MCC containers across vessels (biasing the journey-stage
-    # story: MAERSK's cargo already consolidated, OOCL still far out at sea).
-    picks = rng.choices(vessels, weights=[5, 3, 3, 2, 3, 3], k=n_decon)
+    # Distribute PSCH containers across vessels (spread evenly; the journey-
+    # stage story still comes from each vessel's ETA, docked vs inbound).
+    picks = rng.choices(vessels, weights=[3, 3, 3, 3, 2, 2, 2, 2], k=n_psch)
     mcc_counts = Counter(v.voyage_id for v in picks)
 
     stowage = _build_bay_plans(rng, seen_ids, vessels, mcc_counts)
+    cells = [c for c in stowage if c.is_mcc]
+    n_actual = min(len(cells), n_psch)
+
+    # Exact flow labels, shuffled, zipped onto the cells in order.
+    flow_labels: list[str] = []
+    for flow, count in flow_counts.items():
+        flow_labels += [flow] * count
+    rng.shuffle(flow_labels)
+    flow_labels = flow_labels[:n_actual]
 
     consignee_ids = [f"CUST-{4000 + i}" for i in range(12)]
     shipper_ids = [f"SHP-{100 + i}" for i in range(40)]
 
-    # --- MCC containers come from the bay-plan cells --------------------------
+    # --- PSCH containers come from the bay-plan cells -------------------------
     containers: list[Container] = []
-    for cell in [c for c in stowage if c.is_mcc]:
+    for cell, flow in zip(cells, flow_labels):
+        vessel = vessel_by_id[cell.vessel_id]
         containers.append(
             Container(
                 container_id=cell.container_id,
@@ -480,6 +556,12 @@ def generate(
                     else ["oversized"] if cell.cargo_type == "OOG"
                     else []
                 ),
+                flow=flow,
+                destination=(
+                    _land_destination(rng)
+                    if flow in ("lcl", "fcl", "topup")
+                    else (vessel.destination if flow == "mcc" else None)
+                ),
                 vessel_cutoff=None,
                 stow_position=_stow_string(cell.bay, cell.stack, cell.tier),
                 stow_bay=cell.bay,
@@ -489,8 +571,8 @@ def generate(
         )
 
     # Safety net: the MCC picks above already guarantee a reefer, but if the
-    # world were regenerated with unusual MCC counts, force one anyway (and
-    # keep its bay-plan cell coherent as an RF cell too).
+    # world were regenerated with unusual counts, force one anyway (and keep
+    # its bay-plan cell coherent as an RF cell too).
     mcc_containers = [c for c in containers if c.cargo_flag == CargoFlag.DECONSOLIDATION_REQUIRED]
     if mcc_containers and not any("reefer" in c.special_handling for c in mcc_containers):
         mcc_containers[-1].special_handling = ["reefer"]
@@ -499,10 +581,10 @@ def generate(
                 cell.cargo_type = "RF"
 
     # --- Plain import / transshipment boxes (yard dwell only) -----------------
-    for i in range(n_import + n_transship):
+    for _ in range(max(0, n_containers - n_actual)):
         owner = rng.choice(CONTAINER_OWNERS)
         container_id = _unique_id(rng, seen_ids, owner, 7)
-        if i < n_import:
+        if rng.random() < 0.6:
             cargo_flag = CargoFlag.IMPORT
             customs = rng.choices(
                 [CustomsStatus.CLEARED, CustomsStatus.PENDING, CustomsStatus.HELD],
@@ -526,9 +608,17 @@ def generate(
                 customs_status=customs,
                 consignee_id=rng.choice(consignee_ids),
                 special_handling=_special_handling(rng),
+                flow="yard",
             )
         )
 
+    service_by_flow = {
+        "mcc": ServiceType.LCL_DECONSOLIDATION,
+        "lcl": ServiceType.LCL_DECONSOLIDATION,
+        "fcl": ServiceType.FCL_RELEASE,
+        "topup": ServiceType.TOP_UP,
+        "transload": ServiceType.TRANSLOADING,
+    }
     bookings: list[Booking] = []
     for c in containers:
         if c.cargo_flag != CargoFlag.DECONSOLIDATION_REQUIRED:
@@ -545,7 +635,7 @@ def generate(
             Booking(
                 booking_id=_unique_id(rng, seen_ids, "PSCH-CFS-", 5),
                 linked_container_id=c.container_id,
-                service_type=ServiceType.LCL_DECONSOLIDATION,
+                service_type=service_by_flow[c.flow],
                 shipper_ids=rng.sample(shipper_ids, k=rng.randint(1, 3)),
                 required_by=receipt_est + timedelta(hours=12),
                 storage_zone=storage_zone,
@@ -554,7 +644,11 @@ def generate(
                     weights=[0.5, 0.3, 0.2],
                 )[0],
                 processing_queue_position=rng.randint(0, 8),
-                destination=vessel.destination,  # the MCC final destination
+                destination=(
+                    c.destination
+                    if c.destination
+                    else (vessel.destination if c.flow == "mcc" else None)
+                ),
             )
         )
 
@@ -580,8 +674,9 @@ def generate(
         for idx, consignee_id in enumerate(consignee_ids)
     ]
 
-    # Pallet shipments: each MCC container deconsolidates into 2-4 palletised
-    # cargo units that will later be consolidated into an outbound container.
+    # Pallet shipments: each PSCH container carries 2-4 palletised cargo units
+    # (deconsolidated for mcc/lcl, the container's own cargo for fcl/topup,
+    # the cargo being transferred for transload).
     shipments: list[Shipment] = []
     for c in containers:
         if c.cargo_flag != CargoFlag.DECONSOLIDATION_REQUIRED:
@@ -589,8 +684,11 @@ def generate(
         vessel = vessel_by_id[c.voyage_id]
         receipt_est = (vessel.eta or sim_now) + timedelta(minutes=_EST_RECEIPT_MIN)
         booking = next(b for b in bookings if b.linked_container_id == c.container_id)
-        n_pieces = rng.randint(2, 4)
-        total_volume = rng.uniform(18, 45)  # cbm of palletised MCC cargo
+        # A 40ft deconsolidation container typically breaks down into several
+        # palletised units (2-6 here); the bin it is put away to holds that
+        # whole block until the pallets are picked for consolidation.
+        n_pieces = rng.randint(2, 6)
+        total_volume = rng.uniform(18, 45)  # cbm of palletised cargo
         weights = [rng.random() for _ in range(n_pieces)]
         weight_sum = sum(weights)
         for piece in weights:
@@ -605,11 +703,15 @@ def generate(
                 Shipment(
                     shipment_id=_unique_id(rng, seen_ids, "SHIP-", 6),
                     shipper_id=rng.choice(booking.shipper_ids),
-                    destination=vessel.destination,
+                    destination=c.destination or vessel.destination,
                     cargo_type=cargo_type,
                     volume_cbm=volume,
                     ready_time=receipt_est + timedelta(minutes=30),
-                    service_type=ServiceType.MCC_CONSOLIDATION,
+                    service_type=(
+                        ServiceType.MCC_CONSOLIDATION
+                        if c.flow == "mcc"
+                        else booking.service_type
+                    ),
                     consignee_id=rng.choice(consignee_ids),
                     source_container_id=c.container_id,
                 )

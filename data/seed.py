@@ -7,14 +7,22 @@ from __future__ import annotations
 
 import argparse
 
-from config import DB_PATH, N_CONTAINERS, SEED, SIM_NOW
+from config import DB_PATH, N_CONTAINERS, SEED, SIM_NOW, sim_now as _live_now
 from data import store
 from data.simulator import generate
 
 
-def seed(seed: int = SEED, n_containers: int = N_CONTAINERS, db_path=DB_PATH) -> None:
+def seed(
+    seed: int = SEED,
+    n_containers: int = N_CONTAINERS,
+    db_path=DB_PATH,
+    sim_now=None,
+) -> None:
+    """Generate and load a scenario anchored to ``sim_now`` (default: the live clock)."""
+    if sim_now is None:
+        sim_now = _live_now()
     store.init_db(db_path)
-    scenario = generate(seed=seed, n_containers=n_containers, sim_now=SIM_NOW)
+    scenario = generate(seed=seed, n_containers=n_containers, sim_now=sim_now)
     store.load_scenario(scenario, db_path)
     store.record_event(
         "system",

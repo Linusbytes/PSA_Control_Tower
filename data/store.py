@@ -8,11 +8,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-from config import DB_PATH
+from config import DB_PATH, sim_now
 from models.schemas import (
     CargoFlag,
     MccPlan,
@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS containers (
     customs_status TEXT NOT NULL,
     consignee_id TEXT,
     special_handling TEXT NOT NULL DEFAULT '[]',
+    flow TEXT NOT NULL DEFAULT 'mcc',
+    destination TEXT,
     vessel_cutoff TEXT,
     stow_position TEXT,
     stow_bay INTEGER,
@@ -111,6 +113,8 @@ CREATE TABLE IF NOT EXISTS mcc_plans (
     pallet_pick_time TEXT NOT NULL,
     release_lane TEXT NOT NULL,
     consolidation_group TEXT,
+    flow TEXT NOT NULL DEFAULT 'mcc',
+    destination TEXT,
     reasoning TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS outbound_containers (
@@ -184,6 +188,27 @@ def init_db(path: Path | str = DB_PATH) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with connect(path) as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the original schema (older DB files)."""
+    wanted = {
+        "containers": [
+            ("flow", "TEXT NOT NULL DEFAULT 'mcc'"),
+            ("destination", "TEXT"),
+        ],
+        "mcc_plans": [
+            ("flow", "TEXT NOT NULL DEFAULT 'mcc'"),
+            ("destination", "TEXT"),
+            ("delay_hours", "REAL NOT NULL DEFAULT 0.0"),
+        ],
+    }
+    for table, columns in wanted.items():
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 def load_scenario(scenario: Any, path: Path | str = DB_PATH) -> None:
@@ -209,8 +234,9 @@ def load_scenario(scenario: Any, path: Path | str = DB_PATH) -> None:
                 """INSERT INTO containers
                    (container_id, voyage_id, status, discharge_timestamp, yard_location,
                     size_type, cargo_flag, customs_status, consignee_id, special_handling,
-                    vessel_cutoff, stow_position, stow_bay, stow_row, stow_tier)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    flow, destination, vessel_cutoff, stow_position, stow_bay, stow_row,
+                    stow_tier)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     c.container_id,
                     c.voyage_id,
@@ -222,6 +248,8 @@ def load_scenario(scenario: Any, path: Path | str = DB_PATH) -> None:
                     c.customs_status.value,
                     c.consignee_id,
                     json.dumps(c.special_handling),
+                    c.flow,
+                    c.destination,
                     _iso(c.vessel_cutoff),
                     c.stow_position,
                     c.stow_bay,
@@ -448,8 +476,9 @@ def save_mcc_plans(plans: list[MccPlan], path: Path | str = DB_PATH) -> None:
                     stow_position, sea_arrival, unload_end, depot_arrive,
                     road_depart, psch_receipt_eta, receiving_area, staging_start,
                     staging_end, move_start, move_end, bin_location, putaway_robot,
-                    pallet_pick_time, release_lane, consolidation_group, reasoning)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    pallet_pick_time, release_lane, consolidation_group, flow,
+                    destination, delay_hours, reasoning)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     p.container_id,
                     p.carrying_vessel_id,
@@ -473,9 +502,53 @@ def save_mcc_plans(plans: list[MccPlan], path: Path | str = DB_PATH) -> None:
                     _iso(p.pallet_pick_time),
                     p.release_lane,
                     p.consolidation_group,
+                    p.flow,
+                    p.destination,
+                    p.delay_hours,
                     p.reasoning,
                 ),
             )
+
+
+# Fields an agent may adjust on a single MCC plan (granular change, never a
+# whole-batch rewrite). Kept explicit so an agent can only ever touch plan
+# details, not replace the plan set wholesale.
+MCC_PLAN_EDITABLE_FIELDS = (
+    "bin_location",
+    "receiving_area",
+    "putaway_robot",
+    "release_lane",
+    "consolidation_group",
+    "reasoning",
+)
+
+
+def update_mcc_plan(
+    path: Path | str,
+    container_id: str,
+    **fields: str,
+) -> dict:
+    """Adjust one MCC plan in place (a granular agent change with approval).
+
+    Only ``MCC_PLAN_EDITABLE_FIELDS`` may be written; anything else raises.
+    Returns the updated plan row so the caller can show what changed.
+    """
+    allowed = {k: v for k, v in fields.items() if k in MCC_PLAN_EDITABLE_FIELDS}
+    if not allowed:
+        raise ValueError(
+            f"No editable fields provided; allowed: {', '.join(MCC_PLAN_EDITABLE_FIELDS)}"
+        )
+    sets = ", ".join(f"{k} = ?" for k in allowed)
+    with connect(path) as conn:
+        cur = conn.execute(
+            f"UPDATE mcc_plans SET {sets} WHERE container_id = ?",
+            (*allowed.values(), container_id),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"No MCC plan for container {container_id!r}")
+    return next(
+        p for p in get_mcc_plans(path) if p["container_id"] == container_id
+    )
 
 
 def get_mcc_plans(path: Path | str = DB_PATH) -> list[dict]:
@@ -554,19 +627,58 @@ def get_outbound_containers(path: Path | str = DB_PATH) -> list[dict]:
     return out
 
 
+OUTBOUND_EDITABLE_FIELDS = (
+    "status",
+    "loading_lane",
+    "lane_release_time",
+    "reasoning",
+)
+
+
+def update_outbound_container(
+    path: Path | str,
+    container_id: str,
+    **fields: object,
+) -> dict:
+    """Adjust one outbound container plan in place (granular agent change)."""
+    allowed = {k: v for k, v in fields.items() if k in OUTBOUND_EDITABLE_FIELDS}
+    if not allowed:
+        raise ValueError(
+            f"No editable fields provided; allowed: {', '.join(OUTBOUND_EDITABLE_FIELDS)}"
+        )
+    sets = ", ".join(f"{k} = ?" for k in allowed)
+    vals = [
+        v.isoformat() if hasattr(v, "isoformat") else v for v in allowed.values()
+    ]
+    with connect(path) as conn:
+        cur = conn.execute(
+            f"UPDATE outbound_containers SET {sets} WHERE container_id = ?",
+            (*vals, container_id),
+        )
+        if cur.rowcount == 0:
+            raise KeyError(f"No outbound plan for container {container_id!r}")
+    return next(
+        o for o in get_outbound_containers(path) if o["container_id"] == container_id
+    )
+
+
 # --- Execution trace ------------------------------------------------------------
 
 
 def record_event(
     actor: str, event: str, detail: dict | None = None, path: Path | str = DB_PATH
 ) -> None:
-    """Append one entry to the execution trace (brief requirement #6)."""
+    """Append one entry to the execution trace (brief requirement #6).
+
+    Timestamps follow the **simulation clock** (sim_now), not the wall clock,
+    so the trace lives in the same time as the world it records.
+    """
     init_db(path)
     with connect(path) as conn:
         conn.execute(
             "INSERT INTO trace (ts, actor, event, detail) VALUES (?, ?, ?, ?)",
             (
-                datetime.now(timezone.utc).isoformat(),
+                sim_now().isoformat(),
                 actor,
                 event,
                 json.dumps(detail or {}, default=str),

@@ -28,6 +28,7 @@ consolidation container before it is collected.
 """
 from __future__ import annotations
 
+import random
 import re
 from datetime import datetime
 
@@ -40,6 +41,7 @@ from config import (
     PSCH_LEVELS_PER_AISLE,
     RECEIVING_LANES,
     RELEASING_LANES,
+    SEED,
     SIM_NOW,
 )
 
@@ -116,12 +118,33 @@ def iter_bins(room: str) -> list[str]:
     ]
 
 
+# The facility geometry is static, so the (expensive) bin list derivation is
+# cached once per room / per aisle and reused by every state poll. With 24
+# aisles x 12 levels x 3 bays x 3 boxes this turns repeated O(n) scans into
+# O(1) lookups — important because build_psch_space() runs every 8s poll.
+_ROOM_BINS: dict[str, list[str]] = {}
+_AISLE_BINS: dict[tuple[str, str], list[str]] = {}
+
+
+def _cached_room_bins(room: str) -> list[str]:
+    if room not in _ROOM_BINS:
+        _ROOM_BINS[room] = iter_bins(room)
+    return _ROOM_BINS[room]
+
+
+def _cached_aisle_bins(room: str, aisle: str) -> list[str]:
+    key = (room, aisle)
+    if key not in _AISLE_BINS:
+        _AISLE_BINS[key] = [b for b in _cached_room_bins(room) if aisle_of_bin(b) == aisle]
+    return _AISLE_BINS[key]
+
+
 def aisle_bins(room: str, aisle: str) -> list[str]:
-    return [b for b in iter_bins(room) if aisle_of_bin(b) == aisle]
+    return _cached_aisle_bins(room, aisle)
 
 
 def room_capacity(room: str) -> int:
-    return len(iter_bins(room))
+    return len(_cached_room_bins(room))
 
 
 def total_capacity() -> int:
@@ -133,8 +156,86 @@ def bin_id_of(bin_location: str | None) -> str:
     return (bin_location or "").removeprefix("Bin ")
 
 
+def is_bin(bin_id: str | None) -> bool:
+    """True when the id is a real AISLE-LEVEL-BAY rack bin (vs a staging slot).
+
+    Whole-container flows (FCL / Top Up / Transload) are staged in yard slots
+    and bays rather than deconsolidated into rack bins, so their plan's
+    ``bin_location`` is a descriptive label that must never be counted as a
+    rack bin in the facility view.
+    """
+    return bool(_BIN_RE.match(bin_id or ""))
+
+
 def _esc(value) -> str:
     return str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+# --- Dwell-stock floor (prior-wave carryover) --------------------------------
+# A real container freight station is never empty: cargo from previous waves
+# sits in the racks while the current wave's containers arrive, get put away
+# and are picked. Without that floor the facility view would show a nearly
+# empty warehouse (the complaint this code fixes), so a deterministic
+# "dwell-stock" layer fills every aisle into a realistic utilisation band:
+#   ambient aisles     35-60% (a few quiet aisles ~10%)
+#   hazmat aisle 21    30-50% (DG is always present; segregated)
+#   cold room          30-60% (reefer stock)
+# The floor is derived from (SEED, bin id) so it is identical on every poll
+# and after every wave regeneration, and it tops the aisle up to the band
+# AFTER the current wave's own plan bins are counted, so the total per-aisle
+# utilisation sits inside the band for the whole wave.
+STOCK_BAND = (0.35, 0.60)
+STOCK_QUIET_BAND = (0.08, 0.20)
+STOCK_QUIET_PROB = 0.15
+HAZMAT_BAND = (0.30, 0.50)
+COLD_BAND = (0.30, 0.60)
+
+
+def _aisle_stock_target(aisle: str, cap: int, wave_used: int) -> int:
+    """How many dwell-stock bins an aisle should carry, given its wave usage."""
+    rng = random.Random(f"{SEED}:aisle-band:{aisle}")
+    if aisle == HAZMAT_AISLE:
+        lo, hi = HAZMAT_BAND
+    elif aisle in ROOMS["cold_room"]["aisles"]:
+        lo, hi = COLD_BAND
+    elif rng.random() < STOCK_QUIET_PROB:
+        lo, hi = STOCK_QUIET_BAND
+    else:
+        lo, hi = STOCK_BAND
+    util = rng.uniform(lo, hi)
+    return max(0, round(cap * util) - wave_used)
+
+
+def dwell_stock(wave_bin_ids: set[str], seed: int = SEED) -> dict[str, dict]:
+    """Deterministic prior-wave dwell-stock floor, one pallet per stock bin.
+
+    ``wave_bin_ids`` are the rack bins already claimed by the current wave's
+    plans (a bin is never double-booked). Returns ``{bin_id: stock_bin}`` where
+    each stock bin mirrors the wave-bin shape with ``stock=True`` and a
+    ``DWL-<bin>`` pallet-group id, so the classic UI grid renders it as
+    occupied without it ever appearing in the inbound-container list.
+    """
+    stock: dict[str, dict] = {}
+    for room_id, cfg in ROOMS.items():
+        for aisle in cfg["aisles"]:
+            aisle_ids = _cached_aisle_bins(room_id, aisle)
+            wave_used = sum(1 for b in aisle_ids if b in wave_bin_ids)
+            target = _aisle_stock_target(aisle, len(aisle_ids), wave_used)
+            free = [b for b in aisle_ids if b not in wave_bin_ids]
+            rng = random.Random(f"{SEED}:stock:{aisle}")
+            picks = rng.sample(free, min(target, len(free)))
+            for bid in picks:
+                stock[bid] = {
+                    "id": bid,
+                    "container_id": f"DWL-{bid}",
+                    "status": "Arrived",
+                    "arrived": True,
+                    "receipt_eta": None,
+                    "pallet_pick_time": None,
+                    "consolidation_group": None,
+                    "pallets": 1,
+                    "stock": True,
+                }
+    return stock
 
 
 def build_psch_space(
@@ -160,10 +261,11 @@ def build_psch_space(
 
     bins: dict[str, dict] = {}
     assigned: dict[str, str] = {}
+    wave_bin_ids: set[str] = set()
     for p in plans:
         bid = bin_id_of(p.get("bin_location"))
-        if not bid:
-            continue
+        if not is_bin(bid):
+            continue  # whole-container staging slots are not rack bins
         status = journey_status(p, sim_now)
         bins[bid] = {
             "id": bid,
@@ -176,25 +278,40 @@ def build_psch_space(
             "pallets": pallets_by_container.get(p["container_id"], 0),
         }
         assigned[p["container_id"]] = bid
+        wave_bin_ids.add(bid)
+
+    # Prior-wave dwell stock: fills every aisle into a realistic utilisation
+    # band on top of the current wave's plan bins (never double-booking a bin).
+    stock = dwell_stock(wave_bin_ids)
+    bins.update(stock)
 
     # Rooms with per-aisle occupancy (used/capacity + the assigned bins).
     rooms = []
     for room_id, cfg in ROOMS.items():
         aisles = []
         used_total = 0
+        stock_total = 0
         for aisle in cfg["aisles"]:
-            entries = [bins[b] for b in aisle_bins(room_id, aisle) if b in bins]
-            cap = len(aisle_bins(room_id, aisle))
-            used_total += len(entries)
+            aisle_ids = aisle_bins(room_id, aisle)
+            cap = len(aisle_ids)
+            # Wave bins only in the per-aisle list (the dwell stock is drawn
+            # from the shared bins dict, so it never floods the receiving /
+            # dispatch summaries with background stock).
+            entries = [bins[b] for b in aisle_ids if b in bins and not bins[b].get("stock")]
+            stock_n = sum(1 for b in aisle_ids if b in stock)
+            used = len(entries) + stock_n
+            used_total += used
+            stock_total += stock_n
             aisles.append(
                 {
                     "id": aisle,
                     "levels": cfg["levels"],
                     "bays": cfg["bays"],
                     "boxes": len(cfg["boxes"]),
-                    "used": len(entries),
+                    "used": used,
                     "cap": cap,
-                    "pct": round(100 * len(entries) / cap, 1) if cap else 0.0,
+                    "pct": round(100 * used / cap, 1) if cap else 0.0,
+                    "stock": stock_n,
                     "bins": entries,
                 }
             )
@@ -209,19 +326,26 @@ def build_psch_space(
                 "used": used_total,
                 "cap": cap,
                 "pct": round(100 * used_total / cap, 1) if cap else 0.0,
+                "stock": stock_total,
             }
         )
 
     # Staging lanes at the inbound / outbound areas of PSCH.
     # Receiving lanes map 1:1 to receiving areas (RA-n -> lane n); each lane
-    # lists the containers unloaded/staged there (no physical layout drawn,
-    # just the chips as in the classic view).
+    # lists the containers currently being unloaded/staged there. Membership is
+    # LIVE against the sim clock: a container occupies its lane from the moment
+    # it arrives at PSCH until its putaway move completes (cargo moved to its
+    # bin), so the lanes fill and empty as the wave progresses — and the UI can
+    # flash each lane when a container arrives or leaves.
     receiving = []
     for i, lane in enumerate(RECEIVING_LANES, start=1):
         cids = [
             p["container_id"]
             for p in plans
             if str(p.get("receiving_area", "")).startswith(f"RA-{i}")
+            and p.get("psch_receipt_eta") is not None
+            and sim_now >= p["psch_receipt_eta"]
+            and (p.get("move_end") is None or sim_now < p["move_end"])
         ]
         receiving.append({"lane": lane, "containers": cids})
 
@@ -292,6 +416,7 @@ def build_psch_space(
         "stats": {
             "bins_total": total_capacity(),
             "bins_used": len(bins),
+            "stock_bins": len(stock),
             "bin_util": round(100 * len(bins) / total_capacity(), 1) if total_capacity() else 0.0,
             "pallets_planned": pallets_planned,
             "pallets_in_storage": sum(

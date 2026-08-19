@@ -11,7 +11,15 @@ from datetime import datetime
 
 from config import RECEIVING_LANES, RELEASING_LANES, SIM_NOW
 from agents.mcc_planner import journey_status, outbound_status
-from data.facility import ROOMS, bin_room, room_capacity, total_capacity
+from data.facility import (
+    ROOMS,
+    bin_id_of,
+    bin_room,
+    dwell_stock,
+    is_bin,
+    room_capacity,
+    total_capacity,
+)
 
 JOURNEY_STAGES = ["En Route (Sea)", "Unloaded", "Depot", "En Route (Road)", "Arrived"]
 OUTBOUND_STAGES = ["staged", "released", "in_transit", "loaded"]
@@ -28,9 +36,8 @@ def compute_kpis(
     """Return the KPI dict for the control-tower view."""
     journey_counts = {s: 0 for s in JOURNEY_STAGES}
     for p in plans:
-        journey_counts[journey_status(p, sim_now)] = journey_counts.get(
-            journey_status(p, sim_now), 0
-        ) + 1
+        status = journey_status(p, sim_now)
+        journey_counts[status] = journey_counts.get(status, 0) + 1
 
     outbound_counts = {s: 0 for s in OUTBOUND_STAGES}
     for o in outbounds:
@@ -57,21 +64,21 @@ def compute_kpis(
     ]
     avg_remaining_h = round(sum(in_flight) / len(in_flight), 1) if in_flight else 0.0
 
+    # Only real rack bins count toward storage utilisation; whole-container
+    # staging slots (FCL / Top Up / Transload) are excluded. The prior-wave
+    # dwell-stock floor is added exactly as the facility view does, so the
+    # Control Tower and the Storage page always show the same numbers.
+    bin_plans = [p for p in plans if is_bin(bin_id_of(p.get("bin_location")))]
+    wave_bin_ids = {bin_id_of(p.get("bin_location")) for p in bin_plans}
+    all_bins = wave_bin_ids | set(dwell_stock(wave_bin_ids))
     total_bins = total_capacity()
-    bins_used = len({p.get("bin_location") for p in plans if p.get("bin_location")})
+    bins_used = len(all_bins)
     bin_util = round(100 * bins_used / total_bins, 1) if total_bins else 0.0
 
     # Per-room rack occupancy (ambient vs cold room) for the PSCH space view.
     room_occupancy: dict[str, float] = {}
     for room in ROOMS:
-        used = len(
-            {
-                p["bin_location"]
-                for p in plans
-                if p.get("bin_location")
-                and bin_room(p["bin_location"].removeprefix("Bin ")) == room
-            }
-        )
+        used = sum(1 for b in all_bins if bin_room(b) == room)
         cap = room_capacity(room)
         room_occupancy[room] = round(100 * used / cap, 1) if cap else 0.0
 

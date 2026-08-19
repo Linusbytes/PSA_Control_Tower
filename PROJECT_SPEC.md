@@ -208,7 +208,7 @@ override at any point, matching the risk profile of the decision.
   pallet shipments)
 * MCC planning agent: journey timeline, receiving/putaway plan, consolidation
   schedule
-* Control-tower dashboard: searchable incoming container combobox (list
+* Control-tower dashboard: searchable inbound container combobox (list
   collapses to widen the ship-tracker detail on selection), berth plan map with
   vessel highlight, PSCH plan, KPIs, execution trace
 
