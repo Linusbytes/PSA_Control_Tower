@@ -3353,7 +3353,9 @@ function excRowHtml(e, pkey, i){
   var act = e.suggested_action, actionHtml = '';
   if(act && act.tool){
     if(excPending[pkey] === 'done'){
-      actionHtml = '<div class="exc-act exc-done">Executed — the plan has been updated.</div>';
+      actionHtml = '<div class="exc-act exc-done">&#10003; Approved &amp; executed — the plan has been updated.</div>';
+    } else if(excPending[pkey] === 'rejected'){
+      actionHtml = '<div class="exc-act exc-done">&#10007; Rejected — no change was made.</div>';
     } else if(excPending[pkey]){
       actionHtml = '<div class="exc-act"><b>Proposed:</b> ' + esc(act.label) +
         ' <input type="button" class="btn" value="&#10003; Approve" onclick="excAct(\'' + pkey + '\',\'approve\')"> ' +
@@ -3390,7 +3392,10 @@ async function excAct(pkey, mode){
   var act = e && e.suggested_action;
   if(!act) return;
   await api(mode === 'approve' ? '/api/agent/approve' : '/api/agent/reject', {tool: act.tool, args: act.args});
-  delete excPending[pkey];
+  // Keep a confirmation state visible for this row instead of silently
+  // resetting it back to the "Propose" button (which made approve look like it
+  // did nothing even though the plan had changed).
+  excPending[pkey] = (mode === 'approve') ? 'done' : 'rejected';
   await refresh();
 }
 function excSetFilter(k){ excFilter = k; render(); }
