@@ -24,6 +24,7 @@ Permission levels gate what an agent may do without a human in the loop:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -409,6 +410,16 @@ def _normalise_bin(bin_location: str) -> str:
     from data.facility import bin_id_of, is_bin  # lazy: avoid import cycle
 
     bid = bin_id_of(bin_location)
+    if not is_bin(bid):
+        # Tolerate an unpadded level that the strict AISLE-LEVEL-BAY regex
+        # rejects ('5-8-1B' -> '5-08-1B'). The rule brain and the local LLM
+        # frequently emit single-digit levels; without this the Approve button
+        # would fail validation and appear to do nothing.
+        m = re.match(r"^(\d+)-(\d+)-(\d+)([A-C])$", bid)
+        if m:
+            candidate = f"{m.group(1)}-{int(m.group(2)):02d}-{m.group(3)}{m.group(4)}"
+            if is_bin(candidate):
+                bid = candidate
     if not is_bin(bid):
         raise ValueError(
             f"{bin_location!r} is not a rack bin; use AISLE-LEVEL-BAY like '5-8-1B'"

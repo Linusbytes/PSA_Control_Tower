@@ -221,6 +221,29 @@ def test_reassign_bin_unknown_container(tmp_path):
         tools.call_tool("reassign_bin", {"container_id": "NOPE0000000", "bin_location": "5-08-1B"}, db)
 
 
+def test_reassign_bin_normalises_unpadded_level(tmp_path):
+    """A single-digit level like '5-8-1B' must be padded to '5-08-1B' on
+    approve — the rule brain and local LLM both emit unpadded bins, and a
+    failed normalise used to make the Approve button silently error."""
+    db = _seeded(tmp_path)
+    mcc_planner.plan(db)
+    target = _mcc_plan_that_is_binned(db)
+    # Level below 10 needs zero-padding (5-8-1B -> 5-08-1B); a double-digit
+    # level like 5-12-2B is already canonical and must stay unchanged.
+    result = tools.call_tool(
+        "reassign_bin",
+        {"container_id": target["container_id"], "bin_location": "5-8-1B", "reason": "padded"},
+        db,
+    )
+    assert result["bin_location"] == "Bin 5-08-1B"
+    result2 = tools.call_tool(
+        "reassign_bin",
+        {"container_id": target["container_id"], "bin_location": "5-12-2B", "reason": "canonical"},
+        db,
+    )
+    assert result2["bin_location"] == "Bin 5-12-2B"
+
+
 def test_granular_change_gated_in_advisory_then_applies_on_approve(tmp_path):
     db = _seeded(tmp_path)
     mcc_planner.plan(db)

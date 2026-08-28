@@ -687,7 +687,14 @@ PAGE = r"""<!DOCTYPE html>
              background:#C0C0C0; border:2px solid #000080; min-width:160px; }
   .navlink.nav-group:hover .nav-sub,
   .navlink.nav-group:focus-within .nav-sub { display:block; }
+  /* After choosing a sub-page the open dropdown is suppressed for a moment so
+     it visibly disappears; a fresh hover re-opens it. */
+  .navlink.nav-group:hover .nav-sub.nav-hidden,
+  .nav-sub.nav-hidden { display:none !important; }
   .nav-sub a { display:block; padding:3px 16px; font-weight:bold; white-space:nowrap; }
+  /* The Outbound arrow (▸) must not inherit the link's underline. */
+  .nav-sub a .arrow2, .nav-sub a .arrow2:hover,
+  .nav-group2 > a .arrow2 { text-decoration:none; }
   .nav-sub a:hover { background:#000080; color:#FFFFFF; }
   .nav-sub a.active { background:#000080; color:#FFFFFF; }
   .nav-sub .nav-group2 { position:relative; }
@@ -763,6 +770,13 @@ PAGE = r"""<!DOCTYPE html>
   /* The toolbar goal bar matches the theme's 11px UI font. */
   .toolbar-goal { font-family:"MS Sans Serif","Tahoma",sans-serif; font-size:11px;
                   padding:1px 4px; background:#FFFFFF; border:2px inset #808080; }
+  /* Collapsible agent-reply box under the toolbar. */
+  .goal-head { border:2px outset #FFFFFF; background:#000080; color:#FFFFFF;
+               font-size:10px; padding:3px 6px; cursor:pointer; font-family:"MS Sans Serif","Tahoma",sans-serif; }
+  .goal-head:hover { background:#0000C0; }
+  .goal-head-ico { font-size:9px; }
+  .goal-head b, .goal-head a { color:#FFE87C; }
+  #agentGoalResult table.grid { border-top:none; }
 
   fieldset { border:2px outset #FFFFFF; background:#C0C0C0; padding:6px 8px; min-width:0; }
   legend { font-weight:bold; background:#C0C0C0; border:1px solid #808080; padding:0 4px; }
@@ -1136,17 +1150,17 @@ PAGE = r"""<!DOCTYPE html>
   <td class="navlink nav-group">
     <a id="nav-psch" href="#" onclick="showView('in');return false;">PSCH <span class="arrow">▾</span></a>
     <div class="nav-sub">
-      <a id="nav-in" href="#" onclick="showView('in');return false;">Inbound</a>
-      <a id="nav-store" href="#" onclick="showView('store');return false;">Storage</a>
+      <a id="nav-in" href="#" onclick="closeNav(); showView('in');return false;">Inbound</a>
+      <a id="nav-store" href="#" onclick="closeNav(); showView('store');return false;">Storage</a>
+      <a id="nav-qc" href="#" onclick="closeNav(); showView('qc');return false;">Quality Control</a>
       <div class="nav-group2">
-        <a id="nav-out2" href="#" onclick="showView('dist');return false;">Outbound <span class="arrow2">▸</span></a>
+        <a id="nav-out2" href="#" onclick="closeNav(); showView('mcc');return false;">Outbound <span class="arrow2">▸</span></a>
         <div class="nav-sub2">
-          <a id="nav-mcc" href="#" onclick="showView('mcc');return false;">MCC</a>
-          <a id="nav-dist" href="#" onclick="showView('dist');return false;">Distribution</a>
-          <a id="nav-top" href="#" onclick="showView('top');return false;">Top Up</a>
+          <a id="nav-mcc" class="active" href="#" onclick="closeNav(); showView('mcc');return false;">MCC</a>
+          <a id="nav-dist" href="#" onclick="closeNav(); showView('dist');return false;">Distribution</a>
+          <a id="nav-top" href="#" onclick="closeNav(); showView('top');return false;">Top Up</a>
         </div>
       </div>
-      <a id="nav-qc" href="#" onclick="showView('qc');return false;">Quality Control</a>
     </div>
   </td>
   <td class="navlink"><a id="nav-tower" href="#" onclick="showView('tower');return false;">Control Tower</a></td>
@@ -1157,8 +1171,6 @@ PAGE = r"""<!DOCTYPE html>
 
 <table width="100%" cellpadding="3"><tr>
   <td nowrap class="toolbar" style="position:relative">
-    <input type="button" class="btn" value="&#8635; Regenerate" onclick="regenerate()">
-    <input type="button" class="btn" value="&#9654; Run Hub Planner" onclick="runPlanner()">
     <input type="button" class="btn" id="fsBtn" value="&#x26F6; Full Screen" onclick="toggleFullScreen()">
     <input type="button" class="btn" id="flashBtn" value="&#9881; Display" onclick="toggleFlashSettings()">
     <div class="flash-settings" id="flashSettings">
@@ -1254,7 +1266,7 @@ PAGE = r"""<!DOCTYPE html>
         <div id="pschRackDetail" style="min-height:150px;overflow-x:auto">Select an aisle in the facility view to inspect its bins.</div>
       </fieldset></div>
       <details class="asrs-fyi" style="margin-top:4px">
-        <summary>&#9889; AS/RS — Stacker Charging (FYI)</summary>
+        <summary>AS/RS — Stacker Charging (FYI)</summary>
         <div id="asrsDetail"></div>
       </details>
       <div style="font-size:8px;color:#404040;margin-top:3px">Bins are named <b>AISLE-LEVEL-BAY</b> (e.g. 1-12-2A = Aisle 1, Level 12, Bay 2A); aisles 1-24 (ambient 1-21, cold room 22-24; aisle 21 DG-segregated). Slotting agent stores soon-to-release cargo at floor level, slow movers higher. Yellow bin = reserved · green = arrived · grey = empty. Whole-container flows (FCL / Top Up / Transload) are staged in yard slots and bays, not rack bins.</div>
@@ -1398,9 +1410,9 @@ PAGE = r"""<!DOCTYPE html>
     <div class="hint" style="margin-top:3px"><a href="#" onclick="askExceptionAgent();return false;">Ask the agent</a> — or ask anything in PSA Intelligence.</div>
   </fieldset></div>
   <table width="100%"><tr>
-    <td width="33%" valign="top"><fieldset><legend>Inbound journey stages</legend><table class="grid"><tbody id="journeyRows"></tbody></table></fieldset></td>
-    <td width="34%" valign="top"><fieldset><legend>Outbound consolidation status</legend><table class="grid"><tbody id="outboundStatusRows"></tbody></table></fieldset></td>
     <td width="33%" valign="top"><fieldset><legend>PSCH hub flows (24/7)</legend><table class="grid"><tbody id="hubRows"></tbody></table></fieldset></td>
+    <td width="34%" valign="top"><fieldset><legend>Outbound consolidation status</legend><table class="grid"><tbody id="outboundStatusRows"></tbody></table></fieldset></td>
+    <td width="33%" valign="top"><fieldset><legend>Inbound journey stages</legend><table class="grid"><tbody id="journeyRows"></tbody></table></fieldset></td>
   </tr></table>
 </div>
 
@@ -1423,16 +1435,13 @@ PAGE = r"""<!DOCTYPE html>
   <table width="100%" cellspacing="0" class="intel-shell"><tr>
     <td class="intel-rail">
       <div class="intel-rail-inner">
-        <div class="intel-rail-icon active" title="Ask — PSA Intelligence" onclick="showView('intel')">Ask</div>
-        <div class="intel-rail-icon" title="Log — Execution trace" onclick="showView('trace')">Log</div>
-        <div class="intel-rail-icon" title="Ctrl — Control Tower" onclick="showView('tower')">Ctrl</div>
-        <div class="intel-rail-spacer"></div>
         <div class="intel-rail-icon" title="You — profile" style="border-radius:50%;padding:0">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="#606060" style="vertical-align:middle">
             <circle cx="12" cy="8.5" r="4"/>
             <path d="M4.5 20.5c0-4.1 3.4-6.6 7.5-6.6s7.5 2.5 7.5 6.6z"/>
           </svg>
         </div>
+        <div class="intel-rail-icon active" title="Ask — PSA Intelligence" onclick="showView('intel')" style="margin-top:8px">Ask</div>
       </div>
     </td>
     <td class="intel-main">
@@ -3701,6 +3710,15 @@ function intelBubble(role, text, meta){
 function intelEscape(t){
   return (t || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+// The brain shown on the PSA Intelligence page: the local LLM runs through
+// Ollama, so any model/API brain name is displayed as "ollama"; the
+// deterministic, zero-cost planner stays labelled as the rule brain.
+function intelBrainLabel(name){
+  var n = String(name || '').toLowerCase();
+  if(/ollama|llama|qwen|agentic|api|iwx|mistral|gemma|deepseek/.test(n)) return 'ollama';
+  if(/rule/.test(n)) return 'rule brain';
+  return name || 'ollama';
+}
 // Render the agent's markdown-ish text as clean HTML: **bold**, ### headings,
 // ``` fenced code blocks and `inline code`, so raw symbols never leak through.
 function intelFmt(t){
@@ -3790,10 +3808,10 @@ function intelRender(){
   }
   hero.style.display = 'none';
   thread.style.display = 'block';
-  var brainNow = lastBrainName || 'llama';
+  var brainNow = intelBrainLabel(lastBrainName || 'llama');
   thread.innerHTML = intelThread.map(function(m, mi){
     // Historical log entries stored an old brain label; migrate on display.
-    var meta = (m.meta || '').replace(/agentic-api|psa-iwx-v1/g, brainNow);
+    var meta = (m.meta || '').replace(/(agentic-api|psa-iwx-v1|\bllama\b|qwen[^\s<]*)/gi, brainNow);
     var text = m.text;
     var extra = '';
     // Pending plan changes (from the rule brain or the LLM) render as one
@@ -3838,7 +3856,7 @@ async function intelSend(){
     var answer = intelPolish(r.answer || 'No answer returned.');
     lastBrainName = r.brain || lastBrainName;
     intelThread[intelThread.length - 1] = {role:'assistant', text:answer, meta:meta, pending: pending};
-    if($('intelBrain2')) $('intelBrain2').textContent = r.brain || '';
+    if($('intelBrain2')) $('intelBrain2').textContent = intelBrainLabel(r.brain || '');
     if($('intelAutonomy')) $('intelAutonomy').textContent = r.autonomy || '';
   }catch(err){
     intelThread[intelThread.length - 1] = {role:'assistant', text:'Sorry — I could not reach the agent: ' + err.message, meta:''};
@@ -3886,6 +3904,15 @@ function renderStatus(){
     state.distribution.length + ' land releases, ' + state.outbound.length + ' back-to-port groups, ' +
     state.top_up.length + ' top-up jobs, ' + state.qc.length + ' QC tasks, ' + state.trace.length + ' trace events.';
   $('lastUpdated').innerText = 'Updated ' + isoDTS(state.sim_now).slice(11);
+}
+
+// After choosing a sub-page, momentarily suppress the open dropdown so it
+// visibly disappears (a fresh hover re-opens it).
+function closeNav(){
+  document.querySelectorAll('.nav-sub, .nav-sub2').forEach(function(s){ s.classList.add('nav-hidden'); });
+  setTimeout(function(){
+    document.querySelectorAll('.nav-sub.nav-hidden, .nav-sub2.nav-hidden').forEach(function(s){ s.classList.remove('nav-hidden'); });
+  }, 350);
 }
 
 function showView(v){
@@ -4002,20 +4029,33 @@ async function toolbarAsk(){
 
 // Compact Q&A box under the toolbar so the user sees what they just asked
 // without leaving the page; the full conversation lives in PSA Intelligence.
+// The box can be collapsed from its header so a long answer / many proposal
+// bars do not swallow the whole page's real estate after the reply lands.
+var goalCollapsed = false;
+var goalLast = null;   // {q, answer, pending} of the last rendered toolbar box
 function renderGoalResult(q, answer, pending){
   var box = $('agentGoalResult');
   if(!box) return;
   box.style.display = '';
+  goalLast = {q:q, answer:answer, pending:pending};
   var mi = intelThread.length - 1;
-  var html = '<table class="grid" style="width:100%">' +
+  var html =
+    '<div class="goal-head" onclick="toggleGoalBox()" title="Collapse / expand">' +
+    '<span class="goal-head-ico">' + (goalCollapsed ? '&#9654;' : '&#9660;') + '</span> ' +
+    'Agent reply &mdash; <b>' + intelFmt(intelEscape(q || '')) + '</b></div>' +
+    '<div id="goalBody"' + (goalCollapsed ? ' style="display:none"' : '') + '><table class="grid" style="width:100%">' +
     '<tr><td class="metric" width="80">You</td><td>' + intelFmt(intelEscape(q || '')) + '</td></tr>' +
     '<tr><td class="metric" width="80">Agent</td><td>' + intelFmt(intelEscape(intelStripProposalProse(answer, pending))) + '</td></tr>' +
     (pending && pending.length ?
       '<tr><td class="metric" valign="top">Action</td><td>' + intelProposalBlocks(pending, mi) +
       ' <span style="font-size:9px;color:#404040">approve to apply the plan change.</span></td></tr>' : '') +
     '<tr><td class="metric">Continue</td><td>Ask another question above, or open <a href="#" onclick="showView(\'intel\');return false;">PSA Intelligence</a> to see the full conversation.</td></tr>' +
-    '</table>';
+    '</table></div>';
   box.innerHTML = html;
+}
+function toggleGoalBox(){
+  goalCollapsed = !goalCollapsed;
+  if(goalLast) renderGoalResult(goalLast.q, goalLast.answer, goalLast.pending);
 }
 
 // After an approval/rejection, keep the toolbar box in sync with the thread.
