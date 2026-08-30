@@ -10,3 +10,9 @@ streamlit.log
 streamlit.pid
 *.log
 .freebuff/
+st.json
+st_tmp.json
+data/port.db.bak*
+# Repo holds code + README only; all other markdown is local planning/reference
+/*.md
+!README.md

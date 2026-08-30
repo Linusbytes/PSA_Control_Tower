@@ -122,6 +122,21 @@ def _receiving_areas_for_rate(rate: float) -> int:
 DELAY_CHOICES = (1.0, 2.0, 3.0, 5.0, 8.0)
 DELAY_RATE = 0.12  # ~12% of the wave runs late
 
+# Wave-start stragglers: a few containers are seeded ALREADY mid-road-delay at
+# the moment the wave begins — their promised receipt ETA has passed by a few
+# hours while road congestion still holds them en route (actual arrival =
+# receipt + delay is still ahead). The exception agent flags these the instant
+# the sim clock starts (actionable Approve/Reject advisories), instead of
+# waiting for ETAs to lapse mid-lifecycle. Deterministic per seed.
+STRAGGLER_COUNT = 4
+STRAGGLER_SEA_LEAD_H = 26   # vessel (already docked) discharged ~26h before wave start
+STRAGGLER_ROAD_LEAD_H = 6   # left the port depot 6h before wave start
+STRAGGLER_MISSED_H = (1.5, 3.0, 4.5)
+STRAGGLER_DELAY_H = 96.0    # congestion keeps actual arrival 96h past the promised ETA,
+                            # so the advisory stays visible for a long real-time window
+                            # even at high SIM_SPEED (96h sim = ~58 real s at 6000x,
+                            # ~96 real min at 60x; forever at SIM_SPEED=0)
+
 
 def _delay_hours(container_id: str) -> float:
     h = f"{SEED}:road-delay:{container_id}"
@@ -297,6 +312,26 @@ def plan(store_path=DB_PATH, sim_now: datetime = SIM_NOW) -> None:
                 "receipt": receipt,
             }
         )
+
+    # ---- 1b. Wave-start stragglers: a few containers already late on the road --
+    # Deterministically re-time a small subset so their promised receipt ETA has
+    # just passed while their delayed (receipt + delay_hours) arrival is still
+    # ahead of sim_now. journey_status then reads "En Route (Road)" and the
+    # exception agent surfaces an actionable receipt_eta_missed advisory (with
+    # Approve/Reject) the moment the sim clock starts. Everything downstream
+    # (receiving area, staging, reasoning) derives from the rewritten times.
+    forced_delay: dict[str, float] = {}
+    _srng = random.Random(f"stragglers:{SEED}")
+    for _i in _srng.sample(range(len(timelines)), min(STRAGGLER_COUNT, len(timelines))):
+        t = timelines[_i]
+        missed_h = STRAGGLER_MISSED_H[_i % len(STRAGGLER_MISSED_H)]
+        sea = sim_now - timedelta(hours=STRAGGLER_SEA_LEAD_H)
+        t["sea_arrival"] = sea
+        t["unload_end"] = sea + timedelta(minutes=UNLOAD_MIN)
+        t["depot_arrive"] = t["unload_end"] + timedelta(minutes=YARD_TRANSFER_MIN)
+        t["road_depart"] = sim_now - timedelta(hours=STRAGGLER_ROAD_LEAD_H)
+        t["receipt"] = sim_now - timedelta(hours=missed_h)
+        forced_delay[t["container"]["container_id"]] = STRAGGLER_DELAY_H
 
     # ---- 2. Consolidation: group inbound containers by final destination ------
     # A consolidation container can sail on a vessel already alongside at the
@@ -505,7 +540,7 @@ def plan(store_path=DB_PATH, sim_now: datetime = SIM_NOW) -> None:
         move_start = staging_end
         move_end = move_start + timedelta(minutes=MOVE_TO_BIN_MIN)
         cid = c["container_id"]
-        delay_h = _delay_hours(cid)
+        delay_h = forced_delay.get(cid, _delay_hours(cid))
 
         special = c.get("special_handling") or []
         if "reefer" in special:

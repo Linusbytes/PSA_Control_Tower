@@ -2308,6 +2308,13 @@ function journeyTimeline(m){
 // Bay plans are served on demand (/api/bayplan) and cached per container id,
 // so the 8s state poll never carries the heavy stowage data.
 var bayplanCache = {};
+// 'MISSING' is cached as a string sentinel NOT EQUAL to a real plan, so an empty
+// /api/bayplan result (e.g. a regenerated wave has replaced the container) shows a
+// clear message instead of an endless "loading stowage plan…" spinner, and the
+// placeholder never gets stuck on per-poll refetches.
+function bayplanNoPlanHtml(){
+  return '<div style="padding:6px;color:#884400;font-size:9px">No stowage plan available for this container yet.</div>';
+}
 function ensureBayplan(cid){
   if(!cid) return;
   if(bayplanCache.hasOwnProperty(cid)){
@@ -2315,15 +2322,27 @@ function ensureBayplan(cid){
     // to its "loading stowage plan…" placeholder — re-apply the cached plan so
     // it stays visible instead of flickering away on the next poll.
     var el0 = $('bayplan-' + cid);
-    if(el0 && bayplanCache[cid]) el0.innerHTML = bayplanCache[cid];
+    if(!el0) return;
+    if(bayplanCache[cid] === 'MISSING'){ el0.innerHTML = bayplanNoPlanHtml(); return; }
+    if(bayplanCache[cid]) el0.innerHTML = bayplanCache[cid];
     return;
   }
   bayplanCache[cid] = null; // mark as requested; re-applied on arrival / next poll
   api('/api/bayplan', {container_id: cid}).then(function(resp){
-    bayplanCache[cid] = (resp && resp.html) || '';
+    var html = (resp && resp.html) || '';
     var el = $('bayplan-' + cid);
-    if(el && bayplanCache[cid]) el.innerHTML = bayplanCache[cid];
-  }).catch(function(){ bayplanCache[cid] = ''; });
+    if(html){
+      bayplanCache[cid] = html;
+      if(el) el.innerHTML = html;
+    } else {
+      bayplanCache[cid] = 'MISSING';
+      if(el) el.innerHTML = bayplanNoPlanHtml();
+    }
+  }).catch(function(){
+    bayplanCache[cid] = 'MISSING';
+    var el2 = $('bayplan-' + cid);
+    if(el2) el2.innerHTML = bayplanNoPlanHtml();
+  });
 }
 
 function inspectorIncoming(m, withReasoning){
