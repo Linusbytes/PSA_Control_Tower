@@ -9,8 +9,7 @@ auditable (each read lands in the execution trace) and free.
 
 The seam is identical to the rest of the stack: ``default_intel_brain()``
 returns ``AgenticAPIBrain`` the moment ``AGENTIC_API_ENDPOINT`` is configured,
-and the page never changes — it just starts answering with the LLM. This file
-is Phase 0 of ``AI_INTEGRATION_ROADMAP.md``.
+and the page never changes — it just starts answering with the LLM.
 """
 from __future__ import annotations
 

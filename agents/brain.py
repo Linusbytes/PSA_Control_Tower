@@ -297,9 +297,8 @@ def default_brain() -> AgentBrain:
     return RuleBasedBrain()
 
 
-# The seam is documented in AGENTIC_AI_ARCHITECTURE.md; MUTATE is imported so the
-# schema of a mutate tool is available to future agent brains without a second
-# import site.
+# MUTATE is imported so the schema of a mutate tool is available to future
+# agent brains without a second import site.
 __all__ = [
     "AgentBrain",
     "AgenticAPIBrain",

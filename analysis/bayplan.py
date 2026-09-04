@@ -14,8 +14,9 @@ the plan narrows to the centreline. The highlighted container's cell is never
 hidden by the hull outline, so its Bay-Row-Tier coordinates are always visible
 in the caption and on the diagram itself.
 
-See PORT_PROCESS_FLOW.md §1.3 and the AMT Mercator sample bay plan for the
-domain conventions this follows.
+This follows standard port bay-plan conventions (odd bays for 20ft boxes, even
+bays for 40ft, reefers at the power-socket stacks, DG segregated outboard,
+OOG on top).
 """
 from __future__ import annotations
 

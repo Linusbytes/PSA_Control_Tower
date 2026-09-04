@@ -71,7 +71,7 @@ AGENTIC_MAX_TOOL_ITERATIONS = int(os.getenv("AGENTIC_MAX_TOOL_ITERATIONS", "20")
 
 # --- MCC journey planning constants (minutes) -----------------------------------
 # The agent derives the full port-to-PSCH timeline from a vessel's ETA using
-# these fixed stage durations (see PORT_PROCESS_FLOW.md for the domain model).
+# these fixed stage durations (port-side domain conventions).
 UNLOAD_MIN = int(os.getenv("UNLOAD_MIN", "180"))          # quay discharge of one MCC container
 YARD_TRANSFER_MIN = int(os.getenv("YARD_TRANSFER_MIN", "45"))   # quay -> depot yard
 DEPOT_DWELL_MIN = int(os.getenv("DEPOT_DWELL_MIN", "120"))      # wait before road dispatch
