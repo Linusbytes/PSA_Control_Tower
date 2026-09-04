@@ -164,3 +164,6 @@ Covers the simulator, facility, planner, frontend state, execution trace, agent 
 - **The agent plans; it does not execute** — plans are proposals; nothing physical moves without human approval (in the default `advisory` mode).
 - **Deterministic by default** — the rule-based brain makes any demo replayable; the agentic API is a config change away.
 - **Two UIs, one world** — the classic UI (`server.py`) is the full hub experience; the Streamlit dashboard shares the store and agent but has a simpler page layout.
+
+## Disclaimer
+Some content in this README document is generated with the help of AI.
