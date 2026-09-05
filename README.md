@@ -1,4 +1,5 @@
 # PSA Control Tower — Port ↔ PSCH Integration
+View the demo here: https://youtu.be/mhzsh_eGhY0
 
 A simulated control tower that coordinates cargo between **Tuas Container Port** and the **PSA Supply Chain Hub (PSCH)** — the container freight station and distribution centre in Singapore. It demonstrates how an "agentic AI" planning layer could connect a port and a warehouse: every decision (receiving door, rack bin, releasing lane, outbound vessel cell) is made by a planning agent, shown on a live dashboard, and recorded in an auditable trace.
 
